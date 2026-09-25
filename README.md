@@ -7,10 +7,10 @@ PointOut ist ein kleines Feedback-Widget für React-Web-Apps: Screenshot des akt
 ## Installation aus GitHub
 
 ```sh
-npm install github:hans3n21/pointout#v0.1.0
+npm install 'git+https://github.com/hans3n21/pointout.git#v0.1.0'
 ```
 
-Der GitHub-Tag enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag `v0.1.0` beibehalten, bis ein neuer Tag veröffentlicht wird.
+Der GitHub-Tag enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig. Die HTTPS-Adresse funktioniert auch ohne SSH-Schlüssel. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag `v0.1.0` beibehalten, bis ein neuer Tag veröffentlicht wird.
 
 ### Prompt für Codex oder Claude
 

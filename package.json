@@ -1,0 +1,42 @@
+{
+  "name": "@hans3n21/pointout",
+  "version": "0.1.0",
+  "description": "Screenshot-first feedback for React web apps",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "repository": "https://github.com/hans3n21/pointout",
+  "files": ["dist", "README.md", "supabase"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./server": { "types": "./dist/server/index.d.ts", "import": "./dist/server/index.js" },
+    "./style.css": "./dist/style.css"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/server/index.ts --format esm --dts --out-dir dist --clean && node scripts/mark-client.mjs && tailwindcss -i src/client/input.css -o dist/style.css --minify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.104.1",
+    "html2canvas-pro": "^2.3.1",
+    "lucide-react": "^0.468.0",
+    "openai": "^6.48.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/node": "^22.0.0",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.1.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  }
+}

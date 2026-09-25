@@ -1,0 +1,14 @@
+@layer theme, base, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(po);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(po);
+@source "./";
+
+@layer base {
+  [data-pointout-root], [data-pointout-root] *, [data-pointout-root] *::before, [data-pointout-root] *::after { box-sizing: border-box; }
+  [data-pointout-root] { font-family: ui-sans-serif, system-ui, sans-serif; color: #f4f4f5; }
+  [data-pointout-root] button, [data-pointout-root] textarea { font: inherit; color: inherit; }
+  [data-pointout-root] button { background: transparent; border: 0 solid transparent; padding: 0; cursor: pointer; }
+  [data-pointout-root] button:disabled { cursor: not-allowed; }
+  [data-pointout-root] textarea { border: 1px solid #3f3f46; padding: 0.75rem; }
+  [data-pointout-root] h3, [data-pointout-root] p { margin: 0; }
+}

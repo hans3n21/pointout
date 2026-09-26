@@ -1,6 +1,6 @@
 {
   "name": "@hans3n21/pointout",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Screenshot-first feedback for React web apps",
   "type": "module",
   "engines": { "node": ">=22" },
@@ -25,6 +25,7 @@
     "@supabase/supabase-js": "^2.104.1",
     "html2canvas-pro": "^2.3.1",
     "lucide-react": "^0.468.0",
+    "modern-screenshot": "^4.7.0",
     "openai": "^6.48.0"
   },
   "devDependencies": {

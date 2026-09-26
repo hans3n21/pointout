@@ -150,7 +150,9 @@ export function PointOutWidget({
       const result = await Promise.race([
         captureAppScreen(),
         new Promise<never>((_, reject) => {
-          captureTimer = setTimeout(() => reject(new Error("Screenshot dauert zu lange. Bitte wähle ein Bild aus.")), 5_000);
+          // The browser-drawn capture is faithful but takes 1-4 s on busy pages
+          // (Firefox is slowest); giving up early would lose the right picture.
+          captureTimer = setTimeout(() => reject(new Error("Screenshot dauert zu lange. Bitte wähle ein Bild aus.")), 12_000);
         }),
       ]);
       if (run === captureRun.current) {

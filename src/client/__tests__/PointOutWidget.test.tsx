@@ -16,6 +16,21 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.resetAllMocks(); document
 const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/dQAAAABJRU5ErkJggg==";
 
 describe("PointOutWidget", () => {
+  it("waits for a faithful but slow capture instead of giving up after five seconds", async () => {
+    // Only the timeouts are simulated; React's own scheduler must keep running.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      vi.mocked(captureAppScreen).mockImplementation(() => new Promise((resolve) => { setTimeout(() => resolve({ dataUrl: PIXEL }), 7_000); }));
+      render(<PointOutWidget projectId="sample" projectName="Sample" />);
+      fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
+      await vi.advanceTimersByTimeAsync(7_100);
+      expect(screen.getByRole("img", { name: "Screenshot für dein Feedback" })).toBeTruthy();
+      expect(screen.queryByText(/dauert zu lange/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("captures before opening its overlay", async () => {
     let complete!: (value: { dataUrl: string }) => void;
     vi.mocked(captureAppScreen).mockImplementation(() => new Promise((resolve) => { complete = resolve; }));

@@ -215,7 +215,181 @@ function drawMarks(context, marks, width, height) {
 var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 var MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 var IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp"]);
-async function captureAppScreen() {
+var SCROLL_MARK = "data-pointout-scroll";
+var FIXED_MARK = "data-pointout-fixed";
+var RASTER_MARK = "data-pointout-raster";
+var XLINK = "http://www.w3.org/1999/xlink";
+function readAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+async function paintSvg(svg, width, height) {
+  const copy = svg.cloneNode(true);
+  copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  copy.setAttribute("width", String(width));
+  copy.setAttribute("height", String(height));
+  const liveParts = Array.from(svg.querySelectorAll("*"));
+  Array.from(copy.querySelectorAll("*")).forEach((part, index) => {
+    const style = getComputedStyle(liveParts[index]);
+    for (const property of ["fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity"]) {
+      part.style.setProperty(property, style.getPropertyValue(property));
+    }
+  });
+  for (const image of Array.from(copy.querySelectorAll("image"))) {
+    const href = image.getAttribute("href") ?? image.getAttributeNS(XLINK, "href");
+    if (!href || href.startsWith("data:")) continue;
+    const response = await fetch(new URL(href, document.baseURI).href);
+    if (!response.ok) throw new Error(`Bild ${response.status}`);
+    image.setAttribute("href", await readAsDataUrl(await response.blob()));
+    image.removeAttributeNS(XLINK, "href");
+  }
+  const picture = new Image();
+  picture.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(copy));
+  await picture.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width);
+  canvas.height = Math.round(height);
+  canvas.getContext("2d")?.drawImage(picture, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+}
+async function paintPictureSvgs(rasterize) {
+  const images = [];
+  const marked = [];
+  for (const svg of Array.from(document.body.querySelectorAll("svg"))) {
+    if (!svg.querySelector("image") || svg.parentElement?.closest("svg")) continue;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height || rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) continue;
+    try {
+      images.push(await rasterize(svg, rect.width, rect.height));
+    } catch {
+      continue;
+    }
+    svg.setAttribute(RASTER_MARK, `${images.length - 1},${rect.width},${rect.height}`);
+    marked.push(svg);
+  }
+  return { images, clear: () => marked.forEach((svg) => svg.removeAttribute(RASTER_MARK)) };
+}
+function isUniformImage(pixels, tolerance = 8) {
+  for (let index = 4; index < pixels.length; index += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      if (Math.abs(pixels[index + channel] - pixels[channel]) > tolerance) return false;
+    }
+  }
+  return true;
+}
+async function looksBlank(dataUrl) {
+  const image = new Image();
+  await new Promise((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Screenshot konnte nicht gepr\xFCft werden."));
+    image.src = dataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 36;
+  const context = canvas.getContext("2d");
+  if (!context) return false;
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return isUniformImage(context.getImageData(0, 0, canvas.width, canvas.height).data);
+}
+function pageBackground() {
+  const bodyBackground = getComputedStyle(document.body).backgroundColor;
+  const rootBackground = getComputedStyle(document.documentElement).backgroundColor;
+  return [bodyBackground, rootBackground].find(
+    (color) => color && color !== "transparent" && !/^rgba\([^)]*,\s*0\s*\)$/.test(color)
+  ) ?? "#ffffff";
+}
+function shift(element, left, top) {
+  const current = element.style.transform;
+  const offset = `translate(${-left}px, ${-top}px)`;
+  element.style.transform = current && current !== "none" ? `${offset} ${current}` : offset;
+}
+function markLayout() {
+  const marked = [];
+  const scroller = document.scrollingElement ?? document.documentElement;
+  const page = { left: scroller.scrollLeft, top: scroller.scrollTop };
+  for (const element of Array.from(document.body.querySelectorAll("*"))) {
+    if (element.scrollTop > 0 || element.scrollLeft > 0) {
+      element.setAttribute(SCROLL_MARK, `${element.scrollLeft},${element.scrollTop}`);
+      marked.push(element);
+    }
+  }
+  if (page.left || page.top) {
+    const body = document.body.getBoundingClientRect();
+    for (const element of Array.from(document.body.querySelectorAll("*"))) {
+      if (getComputedStyle(element).position !== "fixed") continue;
+      const rect = element.getBoundingClientRect();
+      element.setAttribute(FIXED_MARK, [rect.left - body.left, rect.top - body.top, rect.width, rect.height].join(","));
+      marked.push(element);
+    }
+  }
+  return {
+    page,
+    clear: () => marked.forEach((element) => {
+      element.removeAttribute(SCROLL_MARK);
+      element.removeAttribute(FIXED_MARK);
+    })
+  };
+}
+function prepareCopy(root, page, painted) {
+  root.querySelectorAll(`[${RASTER_MARK}]`).forEach((svg) => {
+    const [index, width, height] = (svg.getAttribute(RASTER_MARK) ?? "").split(",").map(Number);
+    const picture = svg.ownerDocument.createElement("img");
+    picture.setAttribute("style", svg.getAttribute("style") ?? "");
+    picture.setAttribute("class", svg.getAttribute("class") ?? "");
+    picture.src = painted[index];
+    picture.alt = "";
+    Object.assign(picture.style, { width: `${width}px`, height: `${height}px` });
+    svg.replaceWith(picture);
+  });
+  root.querySelectorAll("[data-pointout-private]").forEach((element) => {
+    element.style.visibility = "hidden";
+  });
+  root.querySelectorAll("input[type=password], input[autocomplete=current-password], input[autocomplete=one-time-code]").forEach((input) => {
+    input.value = "";
+    input.setAttribute("value", "");
+  });
+  root.querySelectorAll(`[${SCROLL_MARK}]`).forEach((panel) => {
+    const [left, top] = (panel.getAttribute(SCROLL_MARK) ?? "0,0").split(",").map(Number);
+    panel.removeAttribute(SCROLL_MARK);
+    panel.style.overflow = "hidden";
+    Array.from(panel.children).forEach((child) => shift(child, left, top));
+  });
+  if (page.left || page.top) {
+    Array.from(root.children).forEach((child) => shift(child, page.left, page.top));
+    root.querySelectorAll(`[${FIXED_MARK}]`).forEach((bar) => {
+      const [left, top, width, height] = (bar.getAttribute(FIXED_MARK) ?? "").split(",").map(Number);
+      bar.removeAttribute(FIXED_MARK);
+      Object.assign(bar.style, { top: `${top}px`, left: `${left}px`, bottom: "auto", right: "auto", width: `${width}px`, height: `${height}px`, margin: "0", transform: "none" });
+    });
+  }
+}
+async function drawWithBrowser(backgroundColor, rasterizeSvg) {
+  const { domToPng } = await import("modern-screenshot");
+  const pictures = await paintPictureSvgs(rasterizeSvg);
+  const layout = markLayout();
+  try {
+    return await domToPng(document.documentElement, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scale: 1,
+      backgroundColor,
+      timeout: 4e3,
+      filter: (node) => !(node instanceof Element && node.hasAttribute("data-feedback-screenshot-ignore")),
+      onCloneNode: (root) => {
+        if (root instanceof Element) prepareCopy(root, layout.page, pictures.images);
+      }
+    });
+  } finally {
+    layout.clear();
+    pictures.clear();
+  }
+}
+async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg } = {}) {
   const sourceCanvases = Array.from(document.querySelectorAll("canvas"));
   const bitmaps = sourceCanvases.map((source) => {
     const rect = source.getBoundingClientRect();
@@ -226,12 +400,13 @@ async function captureAppScreen() {
       throw new Error("Canvas-Inhalt konnte nicht sicher erfasst werden. Bitte w\xE4hle einen echten Screenshot aus.");
     }
   });
+  const backgroundColor = pageBackground();
+  try {
+    const drawn = await drawWithBrowser(backgroundColor, rasterizeSvg);
+    if (drawn.startsWith("data:image/png;base64,") && !await isBlank(drawn)) return checked(drawn);
+  } catch {
+  }
   const { default: html2canvas } = await import("html2canvas-pro");
-  const bodyBackground = getComputedStyle(document.body).backgroundColor;
-  const rootBackground = getComputedStyle(document.documentElement).backgroundColor;
-  const backgroundColor = [bodyBackground, rootBackground].find(
-    (color) => color && color !== "transparent" && !/^rgba\([^)]*,\s*0\s*\)$/.test(color)
-  ) ?? "#ffffff";
   const canvas = await html2canvas(document.documentElement, {
     backgroundColor,
     useCORS: true,
@@ -265,7 +440,9 @@ async function captureAppScreen() {
       });
     }
   });
-  const dataUrl = canvas.toDataURL("image/png");
+  return checked(canvas.toDataURL("image/png"));
+}
+function checked(dataUrl) {
   if (!dataUrl.startsWith("data:image/png;base64,") || dataUrl.length > 8e6) {
     throw new Error("Screenshot konnte nicht gespeichert werden. Bitte w\xE4hle ein Bild aus.");
   }
@@ -943,7 +1120,7 @@ function PointOutWidget({
       const result = await Promise.race([
         captureAppScreen(),
         new Promise((_, reject) => {
-          captureTimer = setTimeout(() => reject(new Error("Screenshot dauert zu lange. Bitte w\xE4hle ein Bild aus.")), 5e3);
+          captureTimer = setTimeout(() => reject(new Error("Screenshot dauert zu lange. Bitte w\xE4hle ein Bild aus.")), 12e3);
         })
       ]);
       if (run === captureRun.current) {

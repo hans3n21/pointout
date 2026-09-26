@@ -9,7 +9,40 @@ import { useDictation } from "./useDictation";
 import { captureAppScreen, flattenAnnotations, readManualScreenshot } from "../core/capture";
 import { collectDeviceContext } from "../core/deviceContext";
 import type { AnnotationMark } from "../core/annotation";
+import { startStepRecorder, toSentSteps, type SentStep, type StepRecorder } from "../core/steps";
 import { PointOutMarkup } from "./PointOutMarkup";
+
+/** What the app itself knows about its state (current view, connection, mode). Keep values short. */
+export type PointOutAppContext = Record<string, string | number | boolean | null>;
+
+type Category = "bug" | "idea" | "design";
+const CATEGORIES: Array<{ value: Category; label: string }> = [
+  { value: "bug", label: "Fehler" },
+  { value: "idea", label: "Idee" },
+  { value: "design", label: "Design" },
+];
+
+function stepLine(step: SentStep): string {
+  const time = `−${Math.floor(step.seconds_before / 60)}:${String(step.seconds_before % 60).padStart(2, "0")}`;
+  const what = step.kind === "click" ? `Klick „${step.label}“${step.area ? ` · ${step.area}` : ""}`
+    : step.kind === "error" ? `Fehler: ${step.label}` : `Anfrage: ${step.label}`;
+  return `${time}  ${what}${step.count ? ` (${step.count}×)` : ""}`;
+}
+
+async function readAppContext(context: PointOutWidgetProps["context"]): Promise<PointOutAppContext | undefined> {
+  if (!context) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(context),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 1_000); }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export type PointOutWidgetProps = {
   projectId: string;
@@ -21,6 +54,8 @@ export type PointOutWidgetProps = {
   targetType?: "page" | "chat_message" | "chat_session" | "design" | "generation";
   targetRef?: string;
   triggerVariant?: "floating" | "header" | "footer" | "icon";
+  /** Read when the dialog opens (max. 1 s); errors are ignored. */
+  context?: () => PointOutAppContext | Promise<PointOutAppContext>;
 };
 
 const subscribeToNothing = () => () => {};
@@ -35,6 +70,7 @@ export function PointOutWidget({
   targetType = "page",
   targetRef,
   triggerVariant = "floating",
+  context,
 }: PointOutWidgetProps) {
   useViewportHeight();
   // Erst nach dem Hydrieren am body einhängen; der Server kennt kein document.
@@ -61,6 +97,12 @@ export function PointOutWidget({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [category, setCategory] = useState<Category | null>(null);
+  const [steps, setSteps] = useState<SentStep[]>([]);
+  const [sendSteps, setSendSteps] = useState(true);
+  const [showSteps, setShowSteps] = useState(false);
+  const [appContext, setAppContext] = useState<PointOutAppContext | undefined>(undefined);
+  const recorderRef = useRef<StepRecorder | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const dictation = useDictation((text) => {
@@ -72,6 +114,11 @@ export function PointOutWidget({
   useEffect(() => {
     captureRun.current += 1;
   }, [pagePath]);
+  useEffect(() => {
+    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl] });
+    recorderRef.current = recorder;
+    return () => { recorder.stop(); recorderRef.current = null; };
+  }, [feedbackUrl, transcribeUrl]);
   useEffect(() => {
     if (!open && dictationPhase === "recording") stopDictation();
   }, [open, dictationPhase, stopDictation]);
@@ -128,6 +175,12 @@ export function PointOutWidget({
       return;
     }
     setError("");
+    // Freeze what led here now; clicks inside the dialog are never recorded.
+    const openedAt = Date.now();
+    setSteps(toSentSteps(recorderRef.current?.snapshot() ?? [], openedAt));
+    setSendSteps(true);
+    setShowSteps(false);
+    void readAppContext(context).then(setAppContext);
     void takeScreenshot();
   }
   const selectImage = useCallback(async (file: File | undefined) => {
@@ -195,7 +248,9 @@ export function PointOutWidget({
           project_id: projectId,
           note: note.trim(),
           transcript_original: transcriptOriginal || null,
-          category: "general",
+          category: category ?? "general",
+          ...(sendSteps && steps.length ? { steps } : {}),
+          ...(appContext ? { app_context: appContext } : {}),
           page_path: context.route,
           screenshot_base64: image,
           annotation_data: { version: 1, marks },
@@ -214,6 +269,7 @@ export function PointOutWidget({
         ? "Bitte warte kurz und versuche es dann erneut."
         : "Feedback konnte nicht gesendet werden. Dein Entwurf bleibt erhalten.");
       setNote(""); setTranscriptOriginal(""); setScreenshot(null); setMarks([]); setCaptureSource(null);
+      setCategory(null); setSteps([]); setAppContext(undefined);
       setSaved(true);
     } catch (cause) {
       setError(cause instanceof Error && (cause.message.startsWith("Das Bild") || cause.message.startsWith("Bitte warte"))
@@ -265,8 +321,43 @@ export function PointOutWidget({
                 <button type="button" aria-label="Aktuellen Bildschirm aufnehmen" onClick={() => { setOpen(false); void takeScreenshot(); }} className="po:inline-flex po:min-h-11 po:shrink-0 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800"><RotateCcw className="po:h-4 po:w-4" /><span className="po:sm:hidden">Aktuell</span><span className="po:hidden po:sm:inline">Neu aufnehmen</span></button>
                 {screenshot ? <button type="button" aria-label="Bild entfernen" title="Bild entfernen" onClick={() => { setScreenshot(null); setMarks([]); setCaptureSource(null); }} className="po:grid po:min-h-11 po:min-w-11 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-400 po:hover:bg-zinc-800"><X className="po:h-4 po:w-4" /></button> : null}
               </div>
+              {steps.length ? (
+                <div className="po:mt-2 po:rounded-xl po:border po:border-zinc-800 po:bg-zinc-950/60 po:px-3 po:text-xs po:text-zinc-300">
+                  <div className="po:flex po:items-center po:justify-between po:gap-2">
+                    <label className="po:flex po:min-h-11 po:cursor-pointer po:items-center po:gap-2">
+                      <input type="checkbox" checked={sendSteps} onChange={(event) => setSendSteps(event.target.checked)} className="po:h-4 po:w-4 po:accent-violet-500" />
+                      Letzte Schritte mitsenden ({steps.length})
+                    </label>
+                    <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((current) => !current)} className="po:min-h-11 po:shrink-0 po:rounded-lg po:px-2.5 po:text-zinc-400 po:hover:bg-zinc-800">
+                      {showSteps ? "Schritte ausblenden" : "Schritte ansehen"}
+                    </button>
+                  </div>
+                  {showSteps ? (
+                    <div className="po:pb-2">
+                      <ol className="po:m-0 po:list-none po:space-y-0.5 po:p-0">
+                        {steps.map((step, index) => (
+                          <li key={`${step.seconds_before}-${step.kind}-${step.label}-${index}`} className="po:flex po:items-center po:justify-between po:gap-2">
+                            <span className={cn("po:min-w-0 po:truncate po:font-mono po:text-[11px]", !sendSteps && "po:text-zinc-600 po:line-through")}>{stepLine(step)}</span>
+                            <button type="button" aria-label={`Schritt entfernen: ${step.label}`} onClick={() => setSteps((current) => current.filter((_, position) => position !== index))}
+                              className="po:grid po:h-8 po:w-8 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-500 po:hover:bg-zinc-800 po:hover:text-zinc-200"><X className="po:h-3.5 po:w-3.5" /></button>
+                          </li>
+                        ))}
+                      </ol>
+                      <p className="po:mt-1 po:text-[11px] po:text-zinc-500">Nur Klicks, Fehler und fehlgeschlagene Anfragen – nie deine Eingaben.</p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div data-testid="pointout-composer" className="po:shrink-0 po:border-t po:border-zinc-700/80 po:bg-zinc-950 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:sm:px-5 po:sm:pb-4">
+              <div role="group" aria-label="Art des Feedbacks (optional)" className="po:mb-2 po:flex po:gap-1.5">
+                {CATEGORIES.map(({ value, label }) => (
+                  <button key={value} type="button" aria-pressed={category === value} onClick={() => setCategory((current) => current === value ? null : value)}
+                    className={cn("po:min-h-10 po:rounded-full po:border po:px-3.5 po:text-xs", category === value ? "po:border-violet-400 po:bg-violet-600/30 po:text-violet-100" : "po:border-zinc-700 po:text-zinc-300 po:hover:bg-zinc-800")}>
+                    {label}
+                  </button>
+                ))}
+              </div>
               <div className="po:flex po:items-end po:gap-2">
                 <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Was ist passiert?" rows={2} maxLength={4000}
                   aria-label="Feedback-Text" className="po:min-h-16 po:flex-1 po:resize-none po:rounded-xl po:border-zinc-700 po:bg-zinc-900 po:text-zinc-100 po:placeholder:text-zinc-500" />

@@ -1,5 +1,7 @@
 import * as react from 'react';
 
+/** What the app itself knows about its state (current view, connection, mode). Keep values short. */
+type PointOutAppContext = Record<string, string | number | boolean | null>;
 type PointOutWidgetProps = {
     projectId: string;
     projectName: string;
@@ -10,8 +12,20 @@ type PointOutWidgetProps = {
     targetType?: "page" | "chat_message" | "chat_session" | "design" | "generation";
     targetRef?: string;
     triggerVariant?: "floating" | "header" | "footer" | "icon";
+    /** Read when the dialog opens (max. 1 s); errors are ignored. */
+    context?: () => PointOutAppContext | Promise<PointOutAppContext>;
 };
-declare function PointOutWidget({ projectId, projectName, appVersion, feedbackUrl, transcribeUrl, sessionId, targetType, targetRef, triggerVariant, }: PointOutWidgetProps): react.JSX.Element;
+declare function PointOutWidget({ projectId, projectName, appVersion, feedbackUrl, transcribeUrl, sessionId, targetType, targetRef, triggerVariant, context, }: PointOutWidgetProps): react.JSX.Element;
+
+type PointOutStepKind = "click" | "error" | "request";
+type SentStep = {
+    seconds_before: number;
+    kind: PointOutStepKind;
+    label: string;
+    area?: string;
+    route: string;
+    count?: number;
+};
 
 type Point = {
     x: number;
@@ -40,6 +54,7 @@ type BrowserNavigator = {
     userAgent?: string;
     maxTouchPoints?: number;
     standalone?: boolean;
+    language?: string;
     userAgentData?: UAData;
 };
 type BrowserEnvironment = {
@@ -57,6 +72,12 @@ type BrowserEnvironment = {
     };
     matchMedia?: (query: string) => {
         matches: boolean;
+    };
+    scrollY?: number;
+    document?: {
+        documentElement: {
+            scrollHeight: number;
+        };
     };
 };
 type DeviceContext = {
@@ -79,8 +100,16 @@ type DeviceContext = {
     pixel_ratio: number;
     touch_enabled: boolean;
     display_mode: "standalone" | "browser";
+    orientation: "portrait" | "landscape";
+    aspect_ratio: number;
+    color_scheme: "dark" | "light";
+    language: string | null;
+    scroll: {
+        y: number;
+        height: number;
+    } | null;
 };
 declare function safePageUrl(href: string): string;
 declare function collectDeviceContext(env?: BrowserEnvironment): Promise<DeviceContext>;
 
-export { type AnnotationMark, type AnnotationTool, type DeviceContext, type Point, PointOutWidget, type PointOutWidgetProps, collectDeviceContext, safePageUrl };
+export { type AnnotationMark, type AnnotationTool, type DeviceContext, type Point, type PointOutAppContext, PointOutWidget, type PointOutWidgetProps, type SentStep, collectDeviceContext, safePageUrl };

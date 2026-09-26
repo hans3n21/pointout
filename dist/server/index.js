@@ -88,6 +88,55 @@ function imageOf(value) {
   const signature = mime === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : mime === "image/jpeg" ? bytes[0] === 255 && bytes[1] === 216 : bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP";
   return signature ? { bytes, mime, extension: match[1] === "jpeg" ? "jpg" : match[1] } : false;
 }
+function stepsOf(value) {
+  if (!Array.isArray(value)) return void 0;
+  const steps = [];
+  for (const raw of value.slice(0, 30)) {
+    const step = recordOf(raw);
+    const kind = step.kind;
+    const label = shortText(step.label, 200);
+    const route = shortText(step.route, 300);
+    const seconds = step.seconds_before;
+    if (kind !== "click" && kind !== "error" && kind !== "request" || !label || route === null || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > 3600) continue;
+    const area = shortText(step.area, 120);
+    const count = step.count;
+    steps.push({
+      seconds_before: Math.round(seconds),
+      kind,
+      label,
+      ...area ? { area } : {},
+      route,
+      ...Number.isInteger(count) && count > 1 && count <= 1e5 ? { count } : {}
+    });
+  }
+  return steps.length ? steps : void 0;
+}
+function appContextOf(value) {
+  const input = recordOf(value);
+  const context = {};
+  for (const [key, item] of Object.entries(input).slice(0, 30)) {
+    if (!key || key.length > 60) continue;
+    if (item === null || typeof item === "boolean" || typeof item === "number" && Number.isFinite(item)) context[key] = item;
+    else if (typeof item === "string" && item.length <= 300) context[key] = item;
+  }
+  return Object.keys(context).length ? context : void 0;
+}
+function formatOf(context) {
+  const format = {};
+  if (context.orientation === "portrait" || context.orientation === "landscape") format.orientation = context.orientation;
+  if (typeof context.aspect_ratio === "number" && context.aspect_ratio > 0 && context.aspect_ratio < 100) format.aspect_ratio = context.aspect_ratio;
+  if (context.color_scheme === "dark" || context.color_scheme === "light") format.color_scheme = context.color_scheme;
+  const language = shortText(context.language, 35);
+  if (language) format.language = language;
+  const scroll = recordOf(context.scroll);
+  if (typeof scroll.y === "number" && Number.isFinite(scroll.y) && scroll.y >= 0 && typeof scroll.height === "number" && Number.isFinite(scroll.height) && scroll.height >= 0) {
+    format.scroll = { y: Math.round(scroll.y), height: Math.round(scroll.height) };
+  }
+  return Object.keys(format).length ? format : void 0;
+}
+function optional(key, value) {
+  return value === void 0 ? {} : { [key]: value };
+}
 function parseFeedback(raw, projectId) {
   const data = recordOf(raw);
   if (data.project_id !== projectId || typeof data.note !== "string" || !data.note.trim() || data.note.length > 4e3) return null;
@@ -118,7 +167,13 @@ function parseFeedback(raw, projectId) {
     touch_enabled: typeof context.touch_enabled === "boolean" ? context.touch_enabled : null,
     display_mode: displayMode === "standalone" || displayMode === "browser" ? displayMode : null,
     app_version: shortText(data.app_version),
-    metadata: captureSource === "automatic" || captureSource === "manual" ? { capture_source: captureSource } : {}
+    metadata: {
+      ...captureSource === "automatic" || captureSource === "manual" ? { capture_source: captureSource } : {},
+      category: data.category === "bug" || data.category === "idea" || data.category === "design" ? data.category : "general",
+      ...optional("steps", stepsOf(data.steps)),
+      ...optional("app_context", appContextOf(data.app_context)),
+      ...optional("format", formatOf(context))
+    }
   } };
 }
 function createPointOutHandlers(options) {

@@ -26,7 +26,13 @@ type FeedbackRecord = {
   touch_enabled: boolean | null;
   display_mode: "standalone" | "browser" | null;
   app_version: string | null;
-  metadata: { capture_source?: "automatic" | "manual" };
+  metadata: {
+    capture_source?: "automatic" | "manual";
+    category?: "bug" | "idea" | "design" | "general";
+    steps?: Array<{ seconds_before: number; kind: "click" | "error" | "request"; label: string; area?: string; route: string; count?: number }>;
+    app_context?: Record<string, string | number | boolean | null>;
+    format?: Partial<{ orientation: "portrait" | "landscape"; aspect_ratio: number; color_scheme: "dark" | "light"; language: string; scroll: { y: number; height: number } }>;
+  };
 };
 
 export type PointOutStore = {
@@ -127,6 +133,57 @@ function imageOf(value: unknown): { bytes: Uint8Array; mime: string; extension: 
   return signature ? { bytes, mime, extension: match[1] === "jpeg" ? "jpg" : match[1] } : false;
 }
 
+// Context pieces are optional extras: a malformed one is dropped, the feedback stays.
+function stepsOf(value: unknown): FeedbackRecord["metadata"]["steps"] {
+  if (!Array.isArray(value)) return undefined;
+  const steps: NonNullable<FeedbackRecord["metadata"]["steps"]> = [];
+  for (const raw of value.slice(0, 30)) {
+    const step = recordOf(raw);
+    const kind = step.kind;
+    const label = shortText(step.label, 200);
+    const route = shortText(step.route, 300);
+    const seconds = step.seconds_before;
+    if ((kind !== "click" && kind !== "error" && kind !== "request") || !label || route === null
+      || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 || seconds > 3600) continue;
+    const area = shortText(step.area, 120);
+    const count = step.count;
+    steps.push({
+      seconds_before: Math.round(seconds), kind, label, ...(area ? { area } : {}), route,
+      ...(Number.isInteger(count) && (count as number) > 1 && (count as number) <= 100_000 ? { count: count as number } : {}),
+    });
+  }
+  return steps.length ? steps : undefined;
+}
+
+function appContextOf(value: unknown): FeedbackRecord["metadata"]["app_context"] {
+  const input = recordOf(value);
+  const context: NonNullable<FeedbackRecord["metadata"]["app_context"]> = {};
+  for (const [key, item] of Object.entries(input).slice(0, 30)) {
+    if (!key || key.length > 60) continue;
+    if (item === null || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) context[key] = item;
+    else if (typeof item === "string" && item.length <= 300) context[key] = item;
+  }
+  return Object.keys(context).length ? context : undefined;
+}
+
+function formatOf(context: Record<string, unknown>): FeedbackRecord["metadata"]["format"] {
+  const format: NonNullable<FeedbackRecord["metadata"]["format"]> = {};
+  if (context.orientation === "portrait" || context.orientation === "landscape") format.orientation = context.orientation;
+  if (typeof context.aspect_ratio === "number" && context.aspect_ratio > 0 && context.aspect_ratio < 100) format.aspect_ratio = context.aspect_ratio;
+  if (context.color_scheme === "dark" || context.color_scheme === "light") format.color_scheme = context.color_scheme;
+  const language = shortText(context.language, 35);
+  if (language) format.language = language;
+  const scroll = recordOf(context.scroll);
+  if (typeof scroll.y === "number" && Number.isFinite(scroll.y) && scroll.y >= 0 && typeof scroll.height === "number" && Number.isFinite(scroll.height) && scroll.height >= 0) {
+    format.scroll = { y: Math.round(scroll.y), height: Math.round(scroll.height) };
+  }
+  return Object.keys(format).length ? format : undefined;
+}
+
+function optional<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+  return (value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
+}
+
 function parseFeedback(raw: unknown, projectId: string): { record: FeedbackRecord; image: Exclude<ReturnType<typeof imageOf>, false> } | null {
   const data = recordOf(raw);
   if (data.project_id !== projectId || typeof data.note !== "string" || !data.note.trim() || data.note.length > 4000) return null;
@@ -150,7 +207,13 @@ function parseFeedback(raw: unknown, projectId: string): { record: FeedbackRecor
     touch_enabled: typeof context.touch_enabled === "boolean" ? context.touch_enabled : null,
     display_mode: displayMode === "standalone" || displayMode === "browser" ? displayMode : null,
     app_version: shortText(data.app_version),
-    metadata: captureSource === "automatic" || captureSource === "manual" ? { capture_source: captureSource } : {},
+    metadata: {
+      ...(captureSource === "automatic" || captureSource === "manual" ? { capture_source: captureSource } : {}),
+      category: data.category === "bug" || data.category === "idea" || data.category === "design" ? data.category : "general",
+      ...optional("steps", stepsOf(data.steps)),
+      ...optional("app_context", appContextOf(data.app_context)),
+      ...optional("format", formatOf(context)),
+    },
   } };
 }
 

@@ -40,6 +40,36 @@ describe("PointOut device context", () => {
     });
   });
 
+  it("describes the format the problem was seen in: orientation, ratio, scheme, language, scroll", async () => {
+    const result = await collectDeviceContext({
+      navigator: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0", maxTouchPoints: 0, language: "de-DE" },
+      location: { href: "https://example.test/", pathname: "/" },
+      innerWidth: 390, innerHeight: 844, devicePixelRatio: 3,
+      screen: { width: 390, height: 844 },
+      matchMedia: (query: string) => ({ matches: query === "(prefers-color-scheme: dark)" }),
+      scrollY: 1200.4,
+      document: { documentElement: { scrollHeight: 3000 } },
+    });
+    expect(result).toMatchObject({
+      orientation: "portrait",
+      aspect_ratio: 0.46,
+      color_scheme: "dark",
+      language: "de-DE",
+      scroll: { y: 1200, height: 3000 },
+    });
+  });
+
+  it("reports landscape and light mode without scroll information when it is not available", async () => {
+    const result = await collectDeviceContext({
+      navigator: { userAgent: "", maxTouchPoints: 0 },
+      location: { href: "https://example.test/", pathname: "/" },
+      innerWidth: 1280, innerHeight: 720,
+      screen: { width: 1920, height: 1080 },
+      matchMedia: () => ({ matches: false }),
+    });
+    expect(result).toMatchObject({ orientation: "landscape", aspect_ratio: 1.78, color_scheme: "light", language: null, scroll: null });
+  });
+
   it("falls back to honest Safari iPhone and desktop Chrome data", async () => {
     const base = {
       location: { href: "https://example.test/", pathname: "/" },

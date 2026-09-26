@@ -5,7 +5,7 @@ type UAData = {
   platform?: string;
   getHighEntropyValues?: (hints: string[]) => Promise<{ platformVersion?: string; fullVersionList?: Brand[] }>;
 };
-type BrowserNavigator = { userAgent?: string; maxTouchPoints?: number; standalone?: boolean; userAgentData?: UAData };
+type BrowserNavigator = { userAgent?: string; maxTouchPoints?: number; standalone?: boolean; language?: string; userAgentData?: UAData };
 type BrowserEnvironment = {
   navigator: BrowserNavigator;
   location: { href: string; pathname: string };
@@ -14,6 +14,8 @@ type BrowserEnvironment = {
   devicePixelRatio?: number;
   screen: { width: number; height: number };
   matchMedia?: (query: string) => { matches: boolean };
+  scrollY?: number;
+  document?: { documentElement: { scrollHeight: number } };
 };
 
 export type DeviceContext = {
@@ -30,6 +32,12 @@ export type DeviceContext = {
   pixel_ratio: number;
   touch_enabled: boolean;
   display_mode: "standalone" | "browser";
+  // Where the problem was seen - not the only format a fix has to work in.
+  orientation: "portrait" | "landscape";
+  aspect_ratio: number;
+  color_scheme: "dark" | "light";
+  language: string | null;
+  scroll: { y: number; height: number } | null;
 };
 
 export function safePageUrl(href: string): string {
@@ -83,5 +91,12 @@ export async function collectDeviceContext(env: BrowserEnvironment = window): Pr
     pixel_ratio: env.devicePixelRatio || 1,
     touch_enabled: (nav.maxTouchPoints ?? 0) > 0,
     display_mode: env.matchMedia?.("(display-mode: standalone)").matches || nav.standalone ? "standalone" : "browser",
+    orientation: env.innerHeight > env.innerWidth ? "portrait" : "landscape",
+    aspect_ratio: Math.round((env.innerWidth / env.innerHeight) * 100) / 100,
+    color_scheme: env.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+    language: nav.language ?? null,
+    scroll: typeof env.scrollY === "number" && env.document
+      ? { y: Math.round(env.scrollY), height: env.document.documentElement.scrollHeight }
+      : null,
   };
 }

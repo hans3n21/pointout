@@ -376,8 +376,130 @@ async function collectDeviceContext(env = window) {
     screen_size: { width: env.screen.width, height: env.screen.height },
     pixel_ratio: env.devicePixelRatio || 1,
     touch_enabled: (nav.maxTouchPoints ?? 0) > 0,
-    display_mode: env.matchMedia?.("(display-mode: standalone)").matches || nav.standalone ? "standalone" : "browser"
+    display_mode: env.matchMedia?.("(display-mode: standalone)").matches || nav.standalone ? "standalone" : "browser",
+    orientation: env.innerHeight > env.innerWidth ? "portrait" : "landscape",
+    aspect_ratio: Math.round(env.innerWidth / env.innerHeight * 100) / 100,
+    color_scheme: env.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+    language: nav.language ?? null,
+    scroll: typeof env.scrollY === "number" && env.document ? { y: Math.round(env.scrollY), height: env.document.documentElement.scrollHeight } : null
   };
+}
+
+// src/core/steps.ts
+var CONTROLS = [
+  "button",
+  "a[href]",
+  "summary",
+  "select",
+  "input[type=checkbox]",
+  "input[type=radio]",
+  "input[type=submit]",
+  "input[type=button]",
+  ...["button", "tab", "link", "menuitem", "switch", "checkbox", "radio", "option"].map((role) => `[role=${role}]`)
+].join(",");
+function short(text, max) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > max ? clean.slice(0, max - 1) + "\u2026" : clean;
+}
+function labelOf(element) {
+  const labelled = element;
+  return short(
+    element.getAttribute("aria-label") || labelled.labels?.[0]?.textContent || element.textContent || element.getAttribute("title") || element.tagName.toLowerCase(),
+    60
+  );
+}
+function areaOf(element) {
+  const area = element.parentElement?.closest("[data-pointout-area], [aria-label]");
+  const text = area?.getAttribute("data-pointout-area") ?? area?.getAttribute("aria-label");
+  return text ? short(text, 60) : void 0;
+}
+function requestTarget(raw, base) {
+  try {
+    const url = new URL(raw, base);
+    return url.host + url.pathname;
+  } catch {
+    return short(raw.split(/[?#]/, 1)[0], 120);
+  }
+}
+function startStepRecorder({
+  target = window,
+  now = () => Date.now(),
+  maxSteps = 20,
+  maxAgeMs = 3 * 6e4,
+  ignoreUrls = []
+} = {}) {
+  let steps = [];
+  let active = true;
+  const ignored = new Set(ignoreUrls.map((url) => requestTarget(url, target.location.href)));
+  function add(kind, label, area) {
+    if (!active || !label) return;
+    const at = now();
+    const route = target.location.pathname;
+    const index = kind === "click" ? steps.length && steps[steps.length - 1].kind === "click" && steps[steps.length - 1].label === label && steps[steps.length - 1].area === area ? steps.length - 1 : -1 : steps.findIndex((step) => step.kind === kind && step.label === label);
+    if (index >= 0) {
+      const [existing] = steps.splice(index, 1);
+      steps.push({ ...existing, at, route, count: existing.count + 1 });
+    } else {
+      steps.push({ kind, label, area, route, at, count: 1 });
+    }
+    if (steps.length > maxSteps) steps = steps.slice(-maxSteps);
+  }
+  const onClick = (event) => {
+    const origin = event.target instanceof Element ? event.target : null;
+    const control = origin?.closest(CONTROLS);
+    if (!control || control.closest("[data-pointout-private], [data-pointout-root]")) return;
+    add("click", labelOf(control), areaOf(control));
+  };
+  const onError = (event) => {
+    const file = event.filename ? event.filename.split(/[?#]/, 1)[0].split("/").pop() : "";
+    add("error", short(event.message || "Unbekannter Fehler", 160) + (file ? ` (${file}:${event.lineno})` : ""));
+  };
+  const onRejection = (event) => {
+    const reason = event.reason;
+    add("error", short(reason instanceof Error ? reason.message : String(reason), 160));
+  };
+  const originalFetch = target.fetch;
+  const recordingFetch = async (input, init) => {
+    const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const where = requestTarget(raw, target.location.href);
+    const record = !ignored.has(where);
+    try {
+      const response = await originalFetch.call(target, input, init);
+      if (record && !response.ok) add("request", `${method} ${where} \u2192 ${response.status}`);
+      return response;
+    } catch (cause) {
+      if (record && !(cause instanceof DOMException && cause.name === "AbortError")) add("request", `${method} ${where} \u2192 Netzwerkfehler`);
+      throw cause;
+    }
+  };
+  target.document.addEventListener("click", onClick, true);
+  target.addEventListener("error", onError);
+  target.addEventListener("unhandledrejection", onRejection);
+  target.fetch = recordingFetch;
+  return {
+    snapshot: () => {
+      const oldest = now() - maxAgeMs;
+      return steps.filter((step) => step.at >= oldest).map((step) => ({ ...step }));
+    },
+    stop: () => {
+      active = false;
+      target.document.removeEventListener("click", onClick, true);
+      target.removeEventListener("error", onError);
+      target.removeEventListener("unhandledrejection", onRejection);
+      if (target.fetch === recordingFetch) target.fetch = originalFetch;
+    }
+  };
+}
+function toSentSteps(steps, openedAt) {
+  return steps.map(({ kind, label, area, route, at, count }) => ({
+    seconds_before: Math.max(0, Math.round((openedAt - at) / 1e3)),
+    kind,
+    label,
+    ...area ? { area } : {},
+    route,
+    ...count > 1 ? { count } : {}
+  }));
 }
 
 // src/client/PointOutMarkup.tsx
@@ -696,6 +818,32 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
 
 // src/client/PointOutWidget.tsx
 import { Fragment, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+var CATEGORIES = [
+  { value: "bug", label: "Fehler" },
+  { value: "idea", label: "Idee" },
+  { value: "design", label: "Design" }
+];
+function stepLine(step) {
+  const time = `\u2212${Math.floor(step.seconds_before / 60)}:${String(step.seconds_before % 60).padStart(2, "0")}`;
+  const what = step.kind === "click" ? `Klick \u201E${step.label}\u201C${step.area ? ` \xB7 ${step.area}` : ""}` : step.kind === "error" ? `Fehler: ${step.label}` : `Anfrage: ${step.label}`;
+  return `${time}  ${what}${step.count ? ` (${step.count}\xD7)` : ""}`;
+}
+async function readAppContext(context) {
+  if (!context) return void 0;
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(context),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(void 0), 1e3);
+      })
+    ]);
+  } catch {
+    return void 0;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 var subscribeToNothing = () => () => {
 };
 function PointOutWidget({
@@ -707,7 +855,8 @@ function PointOutWidget({
   sessionId,
   targetType = "page",
   targetRef,
-  triggerVariant = "floating"
+  triggerVariant = "floating",
+  context
 }) {
   useViewportHeight();
   const mounted = useSyncExternalStore(subscribeToNothing, () => true, () => false);
@@ -732,6 +881,12 @@ function PointOutWidget({
   const [saving, setSaving] = useState3(false);
   const [error, setError] = useState3("");
   const [saved, setSaved] = useState3(false);
+  const [category, setCategory] = useState3(null);
+  const [steps, setSteps] = useState3([]);
+  const [sendSteps, setSendSteps] = useState3(true);
+  const [showSteps, setShowSteps] = useState3(false);
+  const [appContext, setAppContext] = useState3(void 0);
+  const recorderRef = useRef3(null);
   const fileRef = useRef3(null);
   const dialogRef = useRef3(null);
   const dictation = useDictation((text) => {
@@ -742,6 +897,14 @@ function PointOutWidget({
   useEffect4(() => {
     captureRun.current += 1;
   }, [pagePath]);
+  useEffect4(() => {
+    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl] });
+    recorderRef.current = recorder;
+    return () => {
+      recorder.stop();
+      recorderRef.current = null;
+    };
+  }, [feedbackUrl, transcribeUrl]);
   useEffect4(() => {
     if (!open && dictationPhase === "recording") stopDictation();
   }, [open, dictationPhase, stopDictation]);
@@ -806,6 +969,11 @@ function PointOutWidget({
       return;
     }
     setError("");
+    const openedAt = Date.now();
+    setSteps(toSentSteps(recorderRef.current?.snapshot() ?? [], openedAt));
+    setSendSteps(true);
+    setShowSteps(false);
+    void readAppContext(context).then(setAppContext);
     void takeScreenshot();
   }
   const selectImage = useCallback2(async (file) => {
@@ -857,7 +1025,7 @@ function PointOutWidget({
     setSaving(true);
     setError("");
     try {
-      const context = await collectDeviceContext();
+      const context2 = await collectDeviceContext();
       const image = screenshot ? await flattenAnnotations(screenshot, marks) : null;
       if (image && image.length > 8e6) throw new Error("Das Bild ist zu gro\xDF. Bitte w\xE4hle einen kleineren Screenshot aus.");
       const controller = new AbortController();
@@ -872,11 +1040,13 @@ function PointOutWidget({
             project_id: projectId,
             note: note.trim(),
             transcript_original: transcriptOriginal || null,
-            category: "general",
-            page_path: context.route,
+            category: category ?? "general",
+            ...sendSteps && steps.length ? { steps } : {},
+            ...appContext ? { app_context: appContext } : {},
+            page_path: context2.route,
             screenshot_base64: image,
             annotation_data: { version: 1, marks },
-            device_context: context,
+            device_context: context2,
             app_version: appVersion,
             metadata: { capture_source: captureSource },
             session_id: sessionId,
@@ -893,6 +1063,9 @@ function PointOutWidget({
       setScreenshot(null);
       setMarks([]);
       setCaptureSource(null);
+      setCategory(null);
+      setSteps([]);
+      setAppContext(void 0);
       setSaved(true);
     } catch (cause) {
       setError(cause instanceof Error && (cause.message.startsWith("Das Bild") || cause.message.startsWith("Bitte warte")) ? cause.message : "Feedback konnte nicht gesendet werden. Dein Entwurf bleibt erhalten.");
@@ -984,9 +1157,47 @@ function PointOutWidget({
                   setMarks([]);
                   setCaptureSource(null);
                 }, className: "po:grid po:min-h-11 po:min-w-11 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-400 po:hover:bg-zinc-800", children: /* @__PURE__ */ jsx2(X, { className: "po:h-4 po:w-4" }) }) : null
-              ] })
+              ] }),
+              steps.length ? /* @__PURE__ */ jsxs2("div", { className: "po:mt-2 po:rounded-xl po:border po:border-zinc-800 po:bg-zinc-950/60 po:px-3 po:text-xs po:text-zinc-300", children: [
+                /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
+                  /* @__PURE__ */ jsxs2("label", { className: "po:flex po:min-h-11 po:cursor-pointer po:items-center po:gap-2", children: [
+                    /* @__PURE__ */ jsx2("input", { type: "checkbox", checked: sendSteps, onChange: (event) => setSendSteps(event.target.checked), className: "po:h-4 po:w-4 po:accent-violet-500" }),
+                    "Letzte Schritte mitsenden (",
+                    steps.length,
+                    ")"
+                  ] }),
+                  /* @__PURE__ */ jsx2("button", { type: "button", "aria-expanded": showSteps, onClick: () => setShowSteps((current) => !current), className: "po:min-h-11 po:shrink-0 po:rounded-lg po:px-2.5 po:text-zinc-400 po:hover:bg-zinc-800", children: showSteps ? "Schritte ausblenden" : "Schritte ansehen" })
+                ] }),
+                showSteps ? /* @__PURE__ */ jsxs2("div", { className: "po:pb-2", children: [
+                  /* @__PURE__ */ jsx2("ol", { className: "po:m-0 po:list-none po:space-y-0.5 po:p-0", children: steps.map((step, index) => /* @__PURE__ */ jsxs2("li", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
+                    /* @__PURE__ */ jsx2("span", { className: cn("po:min-w-0 po:truncate po:font-mono po:text-[11px]", !sendSteps && "po:text-zinc-600 po:line-through"), children: stepLine(step) }),
+                    /* @__PURE__ */ jsx2(
+                      "button",
+                      {
+                        type: "button",
+                        "aria-label": `Schritt entfernen: ${step.label}`,
+                        onClick: () => setSteps((current) => current.filter((_, position) => position !== index)),
+                        className: "po:grid po:h-8 po:w-8 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-500 po:hover:bg-zinc-800 po:hover:text-zinc-200",
+                        children: /* @__PURE__ */ jsx2(X, { className: "po:h-3.5 po:w-3.5" })
+                      }
+                    )
+                  ] }, `${step.seconds_before}-${step.kind}-${step.label}-${index}`)) }),
+                  /* @__PURE__ */ jsx2("p", { className: "po:mt-1 po:text-[11px] po:text-zinc-500", children: "Nur Klicks, Fehler und fehlgeschlagene Anfragen \u2013 nie deine Eingaben." })
+                ] }) : null
+              ] }) : null
             ] }),
             /* @__PURE__ */ jsxs2("div", { "data-testid": "pointout-composer", className: "po:shrink-0 po:border-t po:border-zinc-700/80 po:bg-zinc-950 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:sm:px-5 po:sm:pb-4", children: [
+              /* @__PURE__ */ jsx2("div", { role: "group", "aria-label": "Art des Feedbacks (optional)", className: "po:mb-2 po:flex po:gap-1.5", children: CATEGORIES.map(({ value, label }) => /* @__PURE__ */ jsx2(
+                "button",
+                {
+                  type: "button",
+                  "aria-pressed": category === value,
+                  onClick: () => setCategory((current) => current === value ? null : value),
+                  className: cn("po:min-h-10 po:rounded-full po:border po:px-3.5 po:text-xs", category === value ? "po:border-violet-400 po:bg-violet-600/30 po:text-violet-100" : "po:border-zinc-700 po:text-zinc-300 po:hover:bg-zinc-800"),
+                  children: label
+                },
+                value
+              )) }),
               /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-end po:gap-2", children: [
                 /* @__PURE__ */ jsx2(
                   "textarea",

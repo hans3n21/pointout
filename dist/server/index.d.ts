@@ -36,6 +36,26 @@ type FeedbackRecord = {
     app_version: string | null;
     metadata: {
         capture_source?: "automatic" | "manual";
+        category?: "bug" | "idea" | "design" | "general";
+        steps?: Array<{
+            seconds_before: number;
+            kind: "click" | "error" | "request";
+            label: string;
+            area?: string;
+            route: string;
+            count?: number;
+        }>;
+        app_context?: Record<string, string | number | boolean | null>;
+        format?: Partial<{
+            orientation: "portrait" | "landscape";
+            aspect_ratio: number;
+            color_scheme: "dark" | "light";
+            language: string;
+            scroll: {
+                y: number;
+                height: number;
+            };
+        }>;
     };
 };
 type PointOutStore = {

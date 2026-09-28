@@ -12,6 +12,10 @@ const TOOLS: { id: AnnotationTool; label: string; icon: typeof Pencil }[] = [
   { id: "arrow", label: "Pfeil", icon: ArrowUpRight },
 ];
 
+const PRESS = "po:transition po:duration-150 po:active:scale-[0.94] po:focus-visible:outline-2 po:focus-visible:outline-violet-300";
+const ACTIVE = "po:bg-rose-500 po:text-white po:shadow-[0_0_16px_rgba(244,63,94,0.45)]";
+const IDLE = "po:text-zinc-300 po:hover:bg-white/10";
+
 function Mark({ mark }: { mark: AnnotationMark }) {
   const first = mark.points[0];
   if (!first) return null;
@@ -247,12 +251,12 @@ export function PointOutMarkup({ screenshot, marks, onChange }: {
 
   return (
     <div>
-      <div ref={viewportRef} className="po:max-h-[48dvh] po:overflow-auto po:rounded-xl po:border po:border-zinc-700 po:bg-zinc-950" aria-label="Screenshot-Ausschnitt">
+      <div ref={viewportRef} className="po:max-h-[36dvh] po:overflow-auto po:sm:max-h-[40dvh] po:rounded-2xl po:bg-black/40 po:ring-1 po:ring-white/10" aria-label="Screenshot-Ausschnitt">
         <div data-testid="pointout-zoom-surface" className="po:relative po:mx-auto"
           style={baseSize ? { width: `${baseSize.width * zoom}px`, height: `${baseSize.height * zoom}px` } : { width: "fit-content" }}>
           <div className="po:relative" style={baseSize ? { width: `${baseSize.width}px`, height: `${baseSize.height}px`, transform: `scale(${zoom})`, transformOrigin: "top left" } : undefined}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img ref={imageRef} src={screenshot} alt="Screenshot für dein Feedback" onLoad={measureImage} className="po:block po:max-h-[48dvh] po:max-w-full" />
+            <img ref={imageRef} src={screenshot} alt="Screenshot für dein Feedback" onLoad={measureImage} className="po:block po:max-h-[36dvh] po:max-w-full po:sm:max-h-[40dvh]" />
             <svg
               role="img"
               aria-label="Screenshot markieren"
@@ -270,22 +274,28 @@ export function PointOutMarkup({ screenshot, marks, onChange }: {
           </div>
         </div>
       </div>
-      <div className="po:mt-2 po:flex po:items-center po:gap-2">
-        <div className="po:flex po:min-w-0 po:flex-1 po:gap-1.5 po:overflow-x-auto po:pb-1" role="toolbar" aria-label="Markierungswerkzeuge">
+      {/* Icons only (named by tooltip and label): two rows on a phone, one row
+          from sm up; every target is 44 px or more. */}
+      <div className="po:mt-3 po:flex po:flex-wrap po:items-center po:gap-2">
+        <div className="po:flex po:min-w-0 po:flex-1 po:basis-full po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10 po:sm:basis-auto" role="toolbar" aria-label="Markierungswerkzeuge">
           {TOOLS.map(({ id, label, icon: Icon }) => (
-            <button key={id} type="button" aria-label={label} aria-pressed={tool === id} onClick={() => setTool(id)}
-              className={cn("po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:px-2 po:text-xs", tool === id ? "po:border-rose-400 po:bg-rose-500/15 po:text-rose-100" : "po:border-zinc-700 po:text-zinc-300")}
-            ><Icon className="po:h-4 po:w-4" /><span className="po:ml-1 po:hidden po:sm:inline">{label}</span></button>
+            <button key={id} type="button" aria-label={label} title={label} aria-pressed={tool === id} onClick={() => setTool(id)}
+              className={cn(PRESS, "po:flex po:min-h-11 po:min-w-11 po:flex-1 po:items-center po:justify-center po:gap-1.5 po:rounded-xl po:px-2 po:text-xs", tool === id ? ACTIVE : IDLE)}
+            ><Icon className="po:h-5 po:w-5" /></button>
           ))}
-          <button type="button" aria-label="Verschieben" aria-pressed={tool === "pan"} onClick={() => setTool("pan")}
-            className={cn("po:flex po:min-h-11 po:min-w-11 po:shrink-0 po:items-center po:justify-center po:rounded-lg po:border", tool === "pan" ? "po:border-rose-400 po:bg-rose-500/15 po:text-rose-100" : "po:border-zinc-700 po:text-zinc-300")}><Hand className="po:h-4 po:w-4" /></button>
-          <button type="button" aria-label="Rückgängig" disabled={marks.length === 0} onClick={() => onChange(marks.slice(0, -1))} className="po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40"><Undo2 className="po:h-4 po:w-4" /></button>
-          <button type="button" aria-label="Markierungen löschen" disabled={marks.length === 0} onClick={() => onChange([])} className="po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40"><Eraser className="po:h-4 po:w-4" /></button>
+          <button type="button" aria-label="Verschieben" title="Verschieben" aria-pressed={tool === "pan"} onClick={() => setTool("pan")}
+            className={cn(PRESS, "po:flex po:min-h-11 po:min-w-11 po:flex-1 po:items-center po:justify-center po:rounded-xl", tool === "pan" ? ACTIVE : IDLE)}><Hand className="po:h-5 po:w-5" /></button>
         </div>
-        <div role="group" aria-label="Zoom" className="po:flex po:shrink-0 po:items-center po:gap-1 po:border-l po:border-zinc-700 po:pl-2 po:pb-1">
-          <button type="button" aria-label="Verkleinern" disabled={zoom <= 1} onClick={() => zoomBy(-0.5)} className="po:flex po:min-h-11 po:min-w-9 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40"><Minus className="po:h-4 po:w-4" /></button>
-          <span data-testid="pointout-zoom-level" className="po:min-w-10 po:text-center po:text-xs po:tabular-nums po:text-zinc-400">{Math.round(zoom * 100)} %</span>
-          <button type="button" aria-label="Vergrößern" disabled={zoom >= 4} onClick={() => zoomBy(0.5)} className="po:flex po:min-h-11 po:min-w-9 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40"><Plus className="po:h-4 po:w-4" /></button>
+        <div className="po:flex po:flex-1 po:items-center po:justify-between po:gap-2 po:sm:flex-none">
+          <div className="po:flex po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10">
+            <button type="button" aria-label="Rückgängig" title="Rückgängig" disabled={marks.length === 0} onClick={() => onChange(marks.slice(0, -1))} className={cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35")}><Undo2 className="po:h-5 po:w-5" /></button>
+            <button type="button" aria-label="Markierungen löschen" title="Markierungen löschen" disabled={marks.length === 0} onClick={() => onChange([])} className={cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35")}><Eraser className="po:h-5 po:w-5" /></button>
+          </div>
+          <div role="group" aria-label="Zoom" className="po:flex po:items-center po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10">
+            <button type="button" aria-label="Verkleinern" disabled={zoom <= 1} onClick={() => zoomBy(-0.5)} className={cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35")}><Minus className="po:h-5 po:w-5" /></button>
+            <span data-testid="pointout-zoom-level" className="po:min-w-12 po:text-center po:text-xs po:tabular-nums po:text-zinc-300">{Math.round(zoom * 100)} %</span>
+            <button type="button" aria-label="Vergrößern" disabled={zoom >= 4} onClick={() => zoomBy(0.5)} className={cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35")}><Plus className="po:h-5 po:w-5" /></button>
+          </div>
         </div>
       </div>
     </div>

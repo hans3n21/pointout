@@ -273,6 +273,48 @@ async function paintPictureSvgs(rasterize) {
   }
   return { images, clear: () => marked.forEach((svg) => svg.removeAttribute(RASTER_MARK)) };
 }
+async function shrinkToScreen(url) {
+  if (url.startsWith("data:")) return false;
+  const picture = new Image();
+  picture.crossOrigin = "anonymous";
+  picture.src = new URL(url, document.baseURI).href;
+  try {
+    await picture.decode();
+  } catch {
+    return false;
+  }
+  const limit = Math.max(window.innerWidth, window.innerHeight) * Math.min(window.devicePixelRatio || 1, 2);
+  const scale = limit / Math.max(picture.naturalWidth, picture.naturalHeight);
+  if (!picture.naturalWidth || !picture.naturalHeight || scale >= 1) return false;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(picture.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(picture.naturalHeight * scale));
+  canvas.getContext("2d")?.drawImage(picture, 0, 0, canvas.width, canvas.height);
+  try {
+    return canvas.toDataURL("image/webp", 0.9);
+  } catch {
+    return false;
+  }
+}
+var CSS_URL = /url\((['"]?)([^'"]+?)\1\)/g;
+async function embedPseudoPictures(svg, shrink) {
+  for (const sheet of Array.from(svg.querySelectorAll("style"))) {
+    const css = sheet.textContent ?? "";
+    const links = new Set(Array.from(css.matchAll(CSS_URL), (match) => match[2]).filter((link) => !link.startsWith("data:")));
+    let embedded = css;
+    for (const link of links) {
+      try {
+        const data = await shrink(link) || await fetch(new URL(link, document.baseURI).href).then((response) => {
+          if (!response.ok) throw new Error(`Bild ${response.status}`);
+          return response.blob();
+        }).then(readAsDataUrl);
+        embedded = embedded.replace(CSS_URL, (whole, quote, found) => found === link ? `url(${quote}${data}${quote})` : whole);
+      } catch {
+      }
+    }
+    if (embedded !== css) sheet.textContent = embedded;
+  }
+}
 function isUniformImage(pixels, tolerance = 8) {
   for (let index = 4; index < pixels.length; index += 4) {
     for (let channel = 0; channel < 3; channel += 1) {
@@ -368,7 +410,7 @@ function prepareCopy(root, page, painted) {
     });
   }
 }
-async function drawWithBrowser(backgroundColor, rasterizeSvg) {
+async function drawWithBrowser(backgroundColor, rasterizeSvg, shrinkPicture) {
   const { domToPng } = await import("modern-screenshot");
   const pictures = await paintPictureSvgs(rasterizeSvg);
   const layout = markLayout();
@@ -379,17 +421,19 @@ async function drawWithBrowser(backgroundColor, rasterizeSvg) {
       scale: 1,
       backgroundColor,
       timeout: 4e3,
+      fetchFn: shrinkPicture,
       filter: (node) => !(node instanceof Element && node.hasAttribute("data-feedback-screenshot-ignore")),
       onCloneNode: (root) => {
         if (root instanceof Element) prepareCopy(root, layout.page, pictures.images);
-      }
+      },
+      onCreateForeignObjectSvg: (svg) => embedPseudoPictures(svg, shrinkPicture)
     });
   } finally {
     layout.clear();
     pictures.clear();
   }
 }
-async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg } = {}) {
+async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreen } = {}) {
   const sourceCanvases = Array.from(document.querySelectorAll("canvas"));
   const bitmaps = sourceCanvases.map((source) => {
     const rect = source.getBoundingClientRect();
@@ -402,7 +446,7 @@ async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg 
   });
   const backgroundColor = pageBackground();
   try {
-    const drawn = await drawWithBrowser(backgroundColor, rasterizeSvg);
+    const drawn = await drawWithBrowser(backgroundColor, rasterizeSvg, shrinkPicture);
     if (drawn.startsWith("data:image/png;base64,") && !await isBlank(drawn)) return checked(drawn);
   } catch {
   }
@@ -689,6 +733,9 @@ var TOOLS = [
   { id: "circle", label: "Kreis", icon: Circle },
   { id: "arrow", label: "Pfeil", icon: ArrowUpRight }
 ];
+var PRESS = "po:transition po:duration-150 po:active:scale-[0.94] po:focus-visible:outline-2 po:focus-visible:outline-violet-300";
+var ACTIVE = "po:bg-rose-500 po:text-white po:shadow-[0_0_16px_rgba(244,63,94,0.45)]";
+var IDLE = "po:text-zinc-300 po:hover:bg-white/10";
 function Mark({ mark }) {
   const first = mark.points[0];
   if (!first) return null;
@@ -921,14 +968,14 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
     setDraft(null);
   }
   return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("div", { ref: viewportRef, className: "po:max-h-[48dvh] po:overflow-auto po:rounded-xl po:border po:border-zinc-700 po:bg-zinc-950", "aria-label": "Screenshot-Ausschnitt", children: /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsx("div", { ref: viewportRef, className: "po:max-h-[36dvh] po:overflow-auto po:sm:max-h-[40dvh] po:rounded-2xl po:bg-black/40 po:ring-1 po:ring-white/10", "aria-label": "Screenshot-Ausschnitt", children: /* @__PURE__ */ jsx(
       "div",
       {
         "data-testid": "pointout-zoom-surface",
         className: "po:relative po:mx-auto",
         style: baseSize ? { width: `${baseSize.width * zoom}px`, height: `${baseSize.height * zoom}px` } : { width: "fit-content" },
         children: /* @__PURE__ */ jsxs("div", { className: "po:relative", style: baseSize ? { width: `${baseSize.width}px`, height: `${baseSize.height}px`, transform: `scale(${zoom})`, transformOrigin: "top left" } : void 0, children: [
-          /* @__PURE__ */ jsx("img", { ref: imageRef, src: screenshot, alt: "Screenshot f\xFCr dein Feedback", onLoad: measureImage, className: "po:block po:max-h-[48dvh] po:max-w-full" }),
+          /* @__PURE__ */ jsx("img", { ref: imageRef, src: screenshot, alt: "Screenshot f\xFCr dein Feedback", onLoad: measureImage, className: "po:block po:max-h-[36dvh] po:max-w-full po:sm:max-h-[40dvh]" }),
           /* @__PURE__ */ jsxs(
             "svg",
             {
@@ -950,20 +997,18 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
         ] })
       }
     ) }),
-    /* @__PURE__ */ jsxs("div", { className: "po:mt-2 po:flex po:items-center po:gap-2", children: [
-      /* @__PURE__ */ jsxs("div", { className: "po:flex po:min-w-0 po:flex-1 po:gap-1.5 po:overflow-x-auto po:pb-1", role: "toolbar", "aria-label": "Markierungswerkzeuge", children: [
-        TOOLS.map(({ id, label, icon: Icon }) => /* @__PURE__ */ jsxs(
+    /* @__PURE__ */ jsxs("div", { className: "po:mt-3 po:flex po:flex-wrap po:items-center po:gap-2", children: [
+      /* @__PURE__ */ jsxs("div", { className: "po:flex po:min-w-0 po:flex-1 po:basis-full po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10 po:sm:basis-auto", role: "toolbar", "aria-label": "Markierungswerkzeuge", children: [
+        TOOLS.map(({ id, label, icon: Icon }) => /* @__PURE__ */ jsx(
           "button",
           {
             type: "button",
             "aria-label": label,
+            title: label,
             "aria-pressed": tool === id,
             onClick: () => setTool(id),
-            className: cn("po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:px-2 po:text-xs", tool === id ? "po:border-rose-400 po:bg-rose-500/15 po:text-rose-100" : "po:border-zinc-700 po:text-zinc-300"),
-            children: [
-              /* @__PURE__ */ jsx(Icon, { className: "po:h-4 po:w-4" }),
-              /* @__PURE__ */ jsx("span", { className: "po:ml-1 po:hidden po:sm:inline", children: label })
-            ]
+            className: cn(PRESS, "po:flex po:min-h-11 po:min-w-11 po:flex-1 po:items-center po:justify-center po:gap-1.5 po:rounded-xl po:px-2 po:text-xs", tool === id ? ACTIVE : IDLE),
+            children: /* @__PURE__ */ jsx(Icon, { className: "po:h-5 po:w-5" })
           },
           id
         )),
@@ -972,22 +1017,27 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
           {
             type: "button",
             "aria-label": "Verschieben",
+            title: "Verschieben",
             "aria-pressed": tool === "pan",
             onClick: () => setTool("pan"),
-            className: cn("po:flex po:min-h-11 po:min-w-11 po:shrink-0 po:items-center po:justify-center po:rounded-lg po:border", tool === "pan" ? "po:border-rose-400 po:bg-rose-500/15 po:text-rose-100" : "po:border-zinc-700 po:text-zinc-300"),
-            children: /* @__PURE__ */ jsx(Hand, { className: "po:h-4 po:w-4" })
+            className: cn(PRESS, "po:flex po:min-h-11 po:min-w-11 po:flex-1 po:items-center po:justify-center po:rounded-xl", tool === "pan" ? ACTIVE : IDLE),
+            children: /* @__PURE__ */ jsx(Hand, { className: "po:h-5 po:w-5" })
           }
-        ),
-        /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "R\xFCckg\xE4ngig", disabled: marks.length === 0, onClick: () => onChange(marks.slice(0, -1)), className: "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40", children: /* @__PURE__ */ jsx(Undo2, { className: "po:h-4 po:w-4" }) }),
-        /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Markierungen l\xF6schen", disabled: marks.length === 0, onClick: () => onChange([]), className: "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40", children: /* @__PURE__ */ jsx(Eraser, { className: "po:h-4 po:w-4" }) })
+        )
       ] }),
-      /* @__PURE__ */ jsxs("div", { role: "group", "aria-label": "Zoom", className: "po:flex po:shrink-0 po:items-center po:gap-1 po:border-l po:border-zinc-700 po:pl-2 po:pb-1", children: [
-        /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Verkleinern", disabled: zoom <= 1, onClick: () => zoomBy(-0.5), className: "po:flex po:min-h-11 po:min-w-9 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40", children: /* @__PURE__ */ jsx(Minus, { className: "po:h-4 po:w-4" }) }),
-        /* @__PURE__ */ jsxs("span", { "data-testid": "pointout-zoom-level", className: "po:min-w-10 po:text-center po:text-xs po:tabular-nums po:text-zinc-400", children: [
-          Math.round(zoom * 100),
-          " %"
+      /* @__PURE__ */ jsxs("div", { className: "po:flex po:flex-1 po:items-center po:justify-between po:gap-2 po:sm:flex-none", children: [
+        /* @__PURE__ */ jsxs("div", { className: "po:flex po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10", children: [
+          /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "R\xFCckg\xE4ngig", title: "R\xFCckg\xE4ngig", disabled: marks.length === 0, onClick: () => onChange(marks.slice(0, -1)), className: cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35"), children: /* @__PURE__ */ jsx(Undo2, { className: "po:h-5 po:w-5" }) }),
+          /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Markierungen l\xF6schen", title: "Markierungen l\xF6schen", disabled: marks.length === 0, onClick: () => onChange([]), className: cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35"), children: /* @__PURE__ */ jsx(Eraser, { className: "po:h-5 po:w-5" }) })
         ] }),
-        /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Vergr\xF6\xDFern", disabled: zoom >= 4, onClick: () => zoomBy(0.5), className: "po:flex po:min-h-11 po:min-w-9 po:items-center po:justify-center po:rounded-lg po:border po:border-zinc-700 po:text-zinc-300 po:disabled:opacity-40", children: /* @__PURE__ */ jsx(Plus, { className: "po:h-4 po:w-4" }) })
+        /* @__PURE__ */ jsxs("div", { role: "group", "aria-label": "Zoom", className: "po:flex po:items-center po:gap-1 po:rounded-2xl po:bg-white/[0.05] po:p-1 po:ring-1 po:ring-white/10", children: [
+          /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Verkleinern", disabled: zoom <= 1, onClick: () => zoomBy(-0.5), className: cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35"), children: /* @__PURE__ */ jsx(Minus, { className: "po:h-5 po:w-5" }) }),
+          /* @__PURE__ */ jsxs("span", { "data-testid": "pointout-zoom-level", className: "po:min-w-12 po:text-center po:text-xs po:tabular-nums po:text-zinc-300", children: [
+            Math.round(zoom * 100),
+            " %"
+          ] }),
+          /* @__PURE__ */ jsx("button", { type: "button", "aria-label": "Vergr\xF6\xDFern", disabled: zoom >= 4, onClick: () => zoomBy(0.5), className: cn(PRESS, IDLE, "po:flex po:min-h-11 po:min-w-11 po:items-center po:justify-center po:rounded-xl po:disabled:opacity-35"), children: /* @__PURE__ */ jsx(Plus, { className: "po:h-5 po:w-5" }) })
+        ] })
       ] })
     ] })
   ] });
@@ -1094,7 +1144,7 @@ function PointOutWidget({
     return () => window.clearTimeout(timer);
   }, [saved]);
   useEffect4(() => {
-    if (!open) return;
+    if (!open || capturing) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     dialogRef.current?.focus();
@@ -1106,7 +1156,7 @@ function PointOutWidget({
       document.body.style.overflow = previous;
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [open]);
+  }, [open, capturing]);
   async function takeScreenshot() {
     const run = ++captureRun.current;
     setCapturing(true);
@@ -1115,6 +1165,9 @@ function PointOutWidget({
     setScreenshot(null);
     setCaptureSource(null);
     setMarks([]);
+    setOpen(true);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    if (run !== captureRun.current) return;
     let captureTimer;
     try {
       const result = await Promise.race([
@@ -1132,10 +1185,7 @@ function PointOutWidget({
       if (run === captureRun.current) setCaptureError(cause instanceof Error ? cause.message : "Screenshot fehlgeschlagen. Bitte w\xE4hle ein Bild aus.");
     } finally {
       if (captureTimer) clearTimeout(captureTimer);
-      if (run === captureRun.current) {
-        setCapturing(false);
-        setOpen(true);
-      }
+      if (run === captureRun.current) setCapturing(false);
     }
   }
   function openDialog() {
@@ -1198,7 +1248,7 @@ function PointOutWidget({
     }
   }
   async function saveNote() {
-    if (!note.trim() || saving || dictation.phase !== "idle") return;
+    if (!note.trim() || saving || capturing || dictation.phase !== "idle") return;
     setSaving(true);
     setError("");
     try {
@@ -1250,6 +1300,8 @@ function PointOutWidget({
       setSaving(false);
     }
   }
+  const press = "po:transition po:duration-150 po:active:scale-[0.96] po:focus-visible:outline-2 po:focus-visible:outline-offset-2 po:focus-visible:outline-violet-300";
+  const chip = cn(press, "po:inline-flex po:min-h-12 po:items-center po:justify-center po:gap-2 po:whitespace-nowrap po:rounded-2xl po:bg-white/[0.06] po:px-3 po:text-sm po:text-zinc-200 po:ring-1 po:ring-white/10 po:hover:bg-white/10 po:disabled:opacity-40");
   const panel = open ? /* @__PURE__ */ jsx2(
     "div",
     {
@@ -1259,8 +1311,8 @@ function PointOutWidget({
       onMouseDown: (event) => {
         if (event.target === event.currentTarget) setOpen(false);
       },
-      className: "po:fixed po:inset-0 po:z-[100] po:flex po:items-end po:justify-center po:bg-black/80 po:p-0 po:sm:items-center po:sm:p-5",
-      children: /* @__PURE__ */ jsx2(
+      className: "po:fixed po:inset-0 po:z-[100] po:flex po:items-end po:justify-center po:bg-zinc-950/70 po:p-0 po:backdrop-blur-sm po:sm:items-center po:sm:p-6",
+      children: /* @__PURE__ */ jsxs2(
         "div",
         {
           ref: dialogRef,
@@ -1275,152 +1327,162 @@ function PointOutWidget({
               void saveNote();
             }
           },
-          className: "po:flex po:h-[var(--pointout-height,100dvh)] po:w-full po:flex-col po:overflow-hidden po:bg-zinc-900 po:shadow-[0_24px_80px_rgba(0,0,0,0.55)] po:outline-none po:sm:h-auto po:sm:max-h-[92dvh] po:sm:max-w-2xl po:sm:rounded-2xl po:sm:border po:sm:border-zinc-700/80",
-          children: saved ? /* @__PURE__ */ jsxs2("div", { "data-testid": "feedback-saved-state", className: "po:flex po:flex-1 po:flex-col po:items-center po:justify-center po:gap-3 po:px-5 po:text-center", children: [
-            /* @__PURE__ */ jsx2(CheckCircle2, { className: "po:h-10 po:w-10 po:text-emerald-400" }),
-            /* @__PURE__ */ jsx2("p", { className: "po:font-semibold po:text-white", children: "Danke f\xFCr dein Feedback!" }),
-            /* @__PURE__ */ jsx2("p", { className: "po:text-sm po:text-zinc-400", children: "Dein Hinweis ist angekommen." })
-          ] }) : /* @__PURE__ */ jsxs2(Fragment, { children: [
-            /* @__PURE__ */ jsxs2("header", { className: "po:flex po:shrink-0 po:items-center po:justify-between po:gap-3 po:border-b po:border-zinc-800 po:px-4 po:py-2.5 po:sm:px-5", children: [
-              /* @__PURE__ */ jsxs2("div", { className: "po:min-w-0", children: [
-                /* @__PURE__ */ jsxs2("h3", { className: "po:flex po:items-center po:gap-2 po:text-base po:font-semibold po:text-white", children: [
-                  /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:h-2 po:w-2 po:rounded-full po:bg-rose-400" }),
-                  "Feedback"
-                ] }),
-                /* @__PURE__ */ jsx2("p", { className: "po:truncate po:text-xs po:text-zinc-400", children: resumedDraft ? "Ungesendeter Entwurf \xB7 Bild von vorher" : `${projectName} \xB7 Stelle markieren, dann beschreiben` })
-              ] }),
-              /* @__PURE__ */ jsx2("button", { type: "button", "aria-label": "Schlie\xDFen", onClick: () => setOpen(false), className: "po:grid po:h-11 po:w-11 po:shrink-0 po:place-items-center po:rounded-full po:text-zinc-300 po:hover:bg-zinc-800 po:focus-visible:outline-2 po:focus-visible:outline-violet-300", children: /* @__PURE__ */ jsx2(X, { className: "po:h-5 po:w-5" }) })
-            ] }),
-            /* @__PURE__ */ jsxs2("div", { className: "po:min-h-0 po:flex-1 po:overflow-y-auto po:overscroll-contain po:px-3 po:py-3 po:sm:px-5 po:sm:py-4", children: [
-              /* @__PURE__ */ jsxs2("div", { className: "po:relative", onContextMenu: (event) => {
-                event.preventDefault();
-                setPasteMenu(true);
-              }, children: [
-                screenshot ? /* @__PURE__ */ jsx2(PointOutMarkup, { screenshot, marks, onChange: setMarks }) : /* @__PURE__ */ jsx2("div", { className: "po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-zinc-700 po:bg-zinc-950 po:p-5 po:text-center po:text-sm po:text-zinc-400", children: "Kein Screenshot vorhanden \u2013 w\xE4hle ein Bild aus oder beschreibe den Fehler direkt." }),
-                pasteMenu ? /* @__PURE__ */ jsx2(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: () => {
-                      setPasteMenu(false);
-                      void pasteFromClipboard();
-                    },
-                    className: "po:absolute po:right-2 po:top-2 po:z-10 po:min-h-11 po:rounded-lg po:border po:border-zinc-600 po:bg-zinc-800 po:px-3 po:text-sm po:text-white po:shadow-lg",
-                    children: "Bild aus Zwischenablage einf\xFCgen"
-                  }
-                ) : null
-              ] }),
-              captureError ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-amber-200", children: captureError }) : null,
-              /* @__PURE__ */ jsxs2("div", { className: "po:mt-2 po:flex po:items-center po:gap-1 po:overflow-x-auto po:text-xs", children: [
-                /* @__PURE__ */ jsx2("input", { ref: fileRef, type: "file", accept: "image/*", "aria-label": "Screenshot ausw\xE4hlen", className: "po:sr-only", onChange: (event) => void selectImage(event.target.files?.[0]) }),
-                /* @__PURE__ */ jsxs2("button", { type: "button", onClick: () => fileRef.current?.click(), className: "po:inline-flex po:min-h-11 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800", children: [
-                  /* @__PURE__ */ jsx2(ImagePlus, { className: "po:h-4 po:w-4" }),
-                  "Bild w\xE4hlen"
-                ] }),
-                /* @__PURE__ */ jsxs2("button", { type: "button", "aria-label": "Screenshot aus Zwischenablage einf\xFCgen", onClick: () => void pasteFromClipboard(), className: "po:inline-flex po:min-h-11 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800", children: [
-                  /* @__PURE__ */ jsx2(ClipboardPaste, { className: "po:h-4 po:w-4" }),
-                  "Einf\xFCgen"
-                ] }),
-                /* @__PURE__ */ jsxs2("button", { type: "button", "aria-label": "Aktuellen Bildschirm aufnehmen", onClick: () => {
-                  setOpen(false);
-                  void takeScreenshot();
-                }, className: "po:inline-flex po:min-h-11 po:shrink-0 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800", children: [
-                  /* @__PURE__ */ jsx2(RotateCcw, { className: "po:h-4 po:w-4" }),
-                  /* @__PURE__ */ jsx2("span", { className: "po:sm:hidden", children: "Aktuell" }),
-                  /* @__PURE__ */ jsx2("span", { className: "po:hidden po:sm:inline", children: "Neu aufnehmen" })
-                ] }),
-                screenshot ? /* @__PURE__ */ jsx2("button", { type: "button", "aria-label": "Bild entfernen", title: "Bild entfernen", onClick: () => {
-                  setScreenshot(null);
-                  setMarks([]);
-                  setCaptureSource(null);
-                }, className: "po:grid po:min-h-11 po:min-w-11 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-400 po:hover:bg-zinc-800", children: /* @__PURE__ */ jsx2(X, { className: "po:h-4 po:w-4" }) }) : null
-              ] }),
-              steps.length ? /* @__PURE__ */ jsxs2("div", { className: "po:mt-2 po:rounded-xl po:border po:border-zinc-800 po:bg-zinc-950/60 po:px-3 po:text-xs po:text-zinc-300", children: [
-                /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
-                  /* @__PURE__ */ jsxs2("label", { className: "po:flex po:min-h-11 po:cursor-pointer po:items-center po:gap-2", children: [
-                    /* @__PURE__ */ jsx2("input", { type: "checkbox", checked: sendSteps, onChange: (event) => setSendSteps(event.target.checked), className: "po:h-4 po:w-4 po:accent-violet-500" }),
-                    "Letzte Schritte mitsenden (",
-                    steps.length,
-                    ")"
+          className: "po:relative po:flex po:h-[var(--pointout-height,100dvh)] po:w-full po:flex-col po:overflow-hidden po:rounded-t-[28px] po:bg-zinc-950 po:bg-[radial-gradient(120%_70%_at_0%_0%,rgba(139,92,246,0.22),transparent_55%),radial-gradient(90%_60%_at_100%_100%,rgba(236,72,153,0.12),transparent_60%)] po:shadow-[0_-12px_60px_rgba(0,0,0,0.6)] po:outline-none po:ring-1 po:ring-white/10 po:sm:h-auto po:sm:max-h-[92dvh] po:sm:max-w-2xl po:sm:rounded-[28px] po:sm:shadow-[0_30px_90px_rgba(0,0,0,0.6)]",
+          children: [
+            /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:mx-auto po:mt-2 po:block po:h-1.5 po:w-10 po:shrink-0 po:rounded-full po:bg-white/20 po:sm:hidden" }),
+            saved ? /* @__PURE__ */ jsxs2("div", { "data-testid": "feedback-saved-state", className: "po:flex po:flex-1 po:flex-col po:items-center po:justify-center po:gap-3 po:px-6 po:py-10 po:text-center", children: [
+              /* @__PURE__ */ jsx2("span", { className: "po:grid po:h-16 po:w-16 po:place-items-center po:rounded-full po:bg-emerald-400/15 po:ring-1 po:ring-emerald-300/30", children: /* @__PURE__ */ jsx2(CheckCircle2, { className: "po:h-9 po:w-9 po:text-emerald-300" }) }),
+              /* @__PURE__ */ jsx2("p", { className: "po:text-lg po:font-semibold po:text-white", children: "Danke f\xFCr dein Feedback!" }),
+              /* @__PURE__ */ jsx2("p", { className: "po:text-sm po:text-zinc-400", children: "Dein Hinweis ist angekommen." })
+            ] }) : /* @__PURE__ */ jsxs2(Fragment, { children: [
+              /* @__PURE__ */ jsxs2("header", { className: "po:flex po:shrink-0 po:items-center po:justify-between po:gap-3 po:px-4 po:pt-2 po:pb-3 po:sm:px-6 po:sm:pt-5", children: [
+                /* @__PURE__ */ jsxs2("div", { className: "po:min-w-0", children: [
+                  /* @__PURE__ */ jsxs2("h3", { className: "po:flex po:items-center po:gap-2 po:text-lg po:font-semibold po:tracking-tight po:text-white", children: [
+                    /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:h-2.5 po:w-2.5 po:rounded-full po:bg-gradient-to-br po:from-violet-400 po:to-fuchsia-500 po:shadow-[0_0_12px_rgba(192,132,252,0.8)]" }),
+                    "Feedback"
                   ] }),
-                  /* @__PURE__ */ jsx2("button", { type: "button", "aria-expanded": showSteps, onClick: () => setShowSteps((current) => !current), className: "po:min-h-11 po:shrink-0 po:rounded-lg po:px-2.5 po:text-zinc-400 po:hover:bg-zinc-800", children: showSteps ? "Schritte ausblenden" : "Schritte ansehen" })
+                  /* @__PURE__ */ jsx2("p", { className: "po:truncate po:text-xs po:text-zinc-400", children: resumedDraft ? "Ungesendeter Entwurf \xB7 Bild von vorher" : `${projectName} \xB7 Stelle markieren, dann beschreiben` })
                 ] }),
-                showSteps ? /* @__PURE__ */ jsxs2("div", { className: "po:pb-2", children: [
-                  /* @__PURE__ */ jsx2("ol", { className: "po:m-0 po:list-none po:space-y-0.5 po:p-0", children: steps.map((step, index) => /* @__PURE__ */ jsxs2("li", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
-                    /* @__PURE__ */ jsx2("span", { className: cn("po:min-w-0 po:truncate po:font-mono po:text-[11px]", !sendSteps && "po:text-zinc-600 po:line-through"), children: stepLine(step) }),
-                    /* @__PURE__ */ jsx2(
-                      "button",
-                      {
-                        type: "button",
-                        "aria-label": `Schritt entfernen: ${step.label}`,
-                        onClick: () => setSteps((current) => current.filter((_, position) => position !== index)),
-                        className: "po:grid po:h-8 po:w-8 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-500 po:hover:bg-zinc-800 po:hover:text-zinc-200",
-                        children: /* @__PURE__ */ jsx2(X, { className: "po:h-3.5 po:w-3.5" })
-                      }
-                    )
-                  ] }, `${step.seconds_before}-${step.kind}-${step.label}-${index}`)) }),
-                  /* @__PURE__ */ jsx2("p", { className: "po:mt-1 po:text-[11px] po:text-zinc-500", children: "Nur Klicks, Fehler und fehlgeschlagene Anfragen \u2013 nie deine Eingaben." })
+                /* @__PURE__ */ jsx2("button", { type: "button", "aria-label": "Schlie\xDFen", onClick: () => setOpen(false), className: cn(press, "po:grid po:h-12 po:w-12 po:shrink-0 po:place-items-center po:rounded-full po:bg-white/[0.06] po:text-zinc-200 po:ring-1 po:ring-white/10 po:hover:bg-white/10"), children: /* @__PURE__ */ jsx2(X, { className: "po:h-5 po:w-5" }) })
+              ] }),
+              /* @__PURE__ */ jsxs2("div", { className: "po:min-h-0 po:flex-1 po:overflow-y-auto po:overscroll-contain po:px-3 po:pb-3 po:sm:px-6 po:sm:pb-4", children: [
+                /* @__PURE__ */ jsxs2("div", { className: "po:relative", onContextMenu: (event) => {
+                  event.preventDefault();
+                  setPasteMenu(true);
+                }, children: [
+                  screenshot ? /* @__PURE__ */ jsx2(PointOutMarkup, { screenshot, marks, onChange: setMarks }) : capturing ? /* @__PURE__ */ jsx2("div", { role: "status", className: "po:grid po:min-h-56 po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10", children: /* @__PURE__ */ jsxs2("span", { className: "po:inline-flex po:items-center po:gap-2", children: [
+                    /* @__PURE__ */ jsx2(Loader2, { className: "po:h-4 po:w-4 po:animate-spin" }),
+                    "Screenshot wird aufgenommen \u2026 du kannst schon schreiben oder einsprechen."
+                  ] }) }) : /* @__PURE__ */ jsx2("div", { className: "po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-white/15 po:bg-white/[0.03] po:p-5 po:text-center po:text-sm po:text-zinc-400", children: "Kein Screenshot vorhanden \u2013 w\xE4hle ein Bild aus oder beschreibe den Fehler direkt." }),
+                  pasteMenu ? /* @__PURE__ */ jsx2(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => {
+                        setPasteMenu(false);
+                        void pasteFromClipboard();
+                      },
+                      className: cn(press, "po:absolute po:right-2 po:top-2 po:z-10 po:min-h-12 po:rounded-2xl po:bg-zinc-800 po:px-4 po:text-sm po:text-white po:shadow-lg po:ring-1 po:ring-white/15"),
+                      children: "Bild aus Zwischenablage einf\xFCgen"
+                    }
+                  ) : null
+                ] }),
+                captureError ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:rounded-xl po:bg-amber-400/10 po:px-3 po:py-2 po:text-sm po:text-amber-200", children: captureError }) : null,
+                /* @__PURE__ */ jsxs2("div", { className: "po:mt-3 po:flex po:items-stretch po:gap-2", children: [
+                  /* @__PURE__ */ jsx2("input", { ref: fileRef, type: "file", accept: "image/*", "aria-label": "Screenshot ausw\xE4hlen", className: "po:sr-only", onChange: (event) => void selectImage(event.target.files?.[0]) }),
+                  /* @__PURE__ */ jsxs2("button", { type: "button", onClick: () => fileRef.current?.click(), className: cn(chip, "po:flex-1"), children: [
+                    /* @__PURE__ */ jsx2(ImagePlus, { className: "po:h-4 po:w-4" }),
+                    "Bild w\xE4hlen"
+                  ] }),
+                  /* @__PURE__ */ jsxs2("button", { type: "button", "aria-label": "Screenshot aus Zwischenablage einf\xFCgen", onClick: () => void pasteFromClipboard(), className: cn(chip, "po:flex-1"), children: [
+                    /* @__PURE__ */ jsx2(ClipboardPaste, { className: "po:h-4 po:w-4" }),
+                    "Einf\xFCgen"
+                  ] }),
+                  /* @__PURE__ */ jsxs2("button", { type: "button", "aria-label": "Aktuellen Bildschirm aufnehmen", disabled: capturing, onClick: () => void takeScreenshot(), className: cn(chip, "po:flex-1"), children: [
+                    /* @__PURE__ */ jsx2(RotateCcw, { className: "po:h-4 po:w-4" }),
+                    /* @__PURE__ */ jsx2("span", { className: "po:sm:hidden", children: "Neu" }),
+                    /* @__PURE__ */ jsx2("span", { className: "po:hidden po:sm:inline", children: "Neu aufnehmen" })
+                  ] }),
+                  screenshot ? /* @__PURE__ */ jsx2("button", { type: "button", "aria-label": "Bild entfernen", title: "Bild entfernen", onClick: () => {
+                    setScreenshot(null);
+                    setMarks([]);
+                    setCaptureSource(null);
+                  }, className: cn(chip, "po:w-12 po:shrink-0 po:px-0 po:text-zinc-400"), children: /* @__PURE__ */ jsx2(X, { className: "po:h-4 po:w-4" }) }) : null
+                ] }),
+                steps.length ? /* @__PURE__ */ jsxs2("div", { className: "po:mt-3 po:rounded-2xl po:bg-white/[0.04] po:px-3 po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10", children: [
+                  /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
+                    /* @__PURE__ */ jsxs2("label", { className: "po:flex po:min-h-12 po:cursor-pointer po:items-center po:gap-3", children: [
+                      /* @__PURE__ */ jsx2("input", { type: "checkbox", checked: sendSteps, onChange: (event) => setSendSteps(event.target.checked), className: "po:h-5 po:w-5 po:accent-violet-500" }),
+                      "Letzte Schritte mitsenden (",
+                      steps.length,
+                      ")"
+                    ] }),
+                    /* @__PURE__ */ jsx2("button", { type: "button", "aria-expanded": showSteps, onClick: () => setShowSteps((current) => !current), className: cn(press, "po:min-h-11 po:shrink-0 po:rounded-xl po:px-3 po:text-xs po:text-zinc-400 po:hover:bg-white/10"), children: showSteps ? "Schritte ausblenden" : "Schritte ansehen" })
+                  ] }),
+                  showSteps ? /* @__PURE__ */ jsxs2("div", { className: "po:pb-2", children: [
+                    /* @__PURE__ */ jsx2("ol", { className: "po:m-0 po:list-none po:space-y-0.5 po:p-0", children: steps.map((step, index) => /* @__PURE__ */ jsxs2("li", { className: "po:flex po:items-center po:justify-between po:gap-2", children: [
+                      /* @__PURE__ */ jsx2("span", { className: cn("po:min-w-0 po:truncate po:font-mono po:text-[11px]", !sendSteps && "po:text-zinc-600 po:line-through"), children: stepLine(step) }),
+                      /* @__PURE__ */ jsx2(
+                        "button",
+                        {
+                          type: "button",
+                          "aria-label": `Schritt entfernen: ${step.label}`,
+                          onClick: () => setSteps((current) => current.filter((_, position) => position !== index)),
+                          className: cn(press, "po:grid po:h-11 po:w-11 po:shrink-0 po:place-items-center po:rounded-xl po:text-zinc-500 po:hover:bg-white/10 po:hover:text-zinc-200"),
+                          children: /* @__PURE__ */ jsx2(X, { className: "po:h-4 po:w-4" })
+                        }
+                      )
+                    ] }, `${step.seconds_before}-${step.kind}-${step.label}-${index}`)) }),
+                    /* @__PURE__ */ jsx2("p", { className: "po:mt-1 po:text-[11px] po:text-zinc-500", children: "Nur Klicks, Fehler und fehlgeschlagene Anfragen \u2013 nie deine Eingaben." })
+                  ] }) : null
                 ] }) : null
-              ] }) : null
-            ] }),
-            /* @__PURE__ */ jsxs2("div", { "data-testid": "pointout-composer", className: "po:shrink-0 po:border-t po:border-zinc-700/80 po:bg-zinc-950 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:sm:px-5 po:sm:pb-4", children: [
-              /* @__PURE__ */ jsx2("div", { role: "group", "aria-label": "Art des Feedbacks (optional)", className: "po:mb-2 po:flex po:gap-1.5", children: CATEGORIES.map(({ value, label }) => /* @__PURE__ */ jsx2(
-                "button",
-                {
-                  type: "button",
-                  "aria-pressed": category === value,
-                  onClick: () => setCategory((current) => current === value ? null : value),
-                  className: cn("po:min-h-10 po:rounded-full po:border po:px-3.5 po:text-xs", category === value ? "po:border-violet-400 po:bg-violet-600/30 po:text-violet-100" : "po:border-zinc-700 po:text-zinc-300 po:hover:bg-zinc-800"),
-                  children: label
-                },
-                value
-              )) }),
-              /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-end po:gap-2", children: [
-                /* @__PURE__ */ jsx2(
-                  "textarea",
+              ] }),
+              /* @__PURE__ */ jsxs2("div", { "data-testid": "pointout-composer", className: "po:shrink-0 po:border-t po:border-white/10 po:bg-zinc-950/80 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:backdrop-blur po:sm:px-6 po:sm:pb-5", children: [
+                /* @__PURE__ */ jsx2("div", { role: "group", "aria-label": "Art des Feedbacks (optional)", className: "po:mb-3 po:flex po:gap-2", children: CATEGORIES.map(({ value, label }) => /* @__PURE__ */ jsx2(
+                  "button",
                   {
-                    value: note,
-                    onChange: (event) => setNote(event.target.value),
-                    placeholder: "Was ist passiert?",
-                    rows: 2,
-                    maxLength: 4e3,
-                    "aria-label": "Feedback-Text",
-                    className: "po:min-h-16 po:flex-1 po:resize-none po:rounded-xl po:border-zinc-700 po:bg-zinc-900 po:text-zinc-100 po:placeholder:text-zinc-500"
-                  }
-                ),
+                    type: "button",
+                    "aria-pressed": category === value,
+                    onClick: () => setCategory((current) => current === value ? null : value),
+                    className: cn(press, "po:min-h-11 po:flex-1 po:rounded-full po:px-4 po:text-sm po:font-medium po:ring-1 po:sm:flex-none", category === value ? "po:bg-violet-500 po:text-white po:ring-violet-300/60 po:shadow-[0_0_18px_rgba(139,92,246,0.45)]" : "po:bg-white/[0.05] po:text-zinc-300 po:ring-white/10 po:hover:bg-white/10"),
+                    children: label
+                  },
+                  value
+                )) }),
+                /* @__PURE__ */ jsxs2("div", { className: "po:flex po:items-end po:gap-2", children: [
+                  /* @__PURE__ */ jsx2(
+                    "textarea",
+                    {
+                      value: note,
+                      onChange: (event) => setNote(event.target.value),
+                      placeholder: "Was ist passiert?",
+                      rows: 2,
+                      maxLength: 4e3,
+                      "aria-label": "Feedback-Text",
+                      className: "po:min-h-16 po:flex-1 po:resize-none po:rounded-2xl po:bg-white/[0.05] po:text-base po:text-zinc-100 po:outline-none po:placeholder:text-zinc-500 po:focus:border-violet-400/70"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxs2(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => dictation.phase === "recording" ? dictation.stop() : void dictation.start(),
+                      disabled: dictation.phase === "transcribing",
+                      "aria-label": dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : "Einsprechen",
+                      className: cn(
+                        press,
+                        "po:relative po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-2xl po:text-white po:shadow-lg po:disabled:opacity-60",
+                        dictation.phase === "recording" ? "po:bg-rose-500 po:shadow-rose-900/50" : "po:bg-gradient-to-br po:from-violet-500 po:to-fuchsia-600 po:shadow-violet-900/50"
+                      ),
+                      children: [
+                        dictation.phase === "recording" ? /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:absolute po:inset-0 po:animate-ping po:rounded-2xl po:bg-rose-400/40" }) : null,
+                        dictation.phase === "recording" ? /* @__PURE__ */ jsx2(Square, { className: "po:relative po:h-6 po:w-6 po:fill-current" }) : dictation.phase === "transcribing" ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-6 po:w-6 po:animate-spin" }) : /* @__PURE__ */ jsx2(Mic, { className: "po:h-7 po:w-7" })
+                      ]
+                    }
+                  )
+                ] }),
+                dictation.phase !== "idle" ? /* @__PURE__ */ jsx2("p", { role: "status", className: "po:mt-2 po:text-xs po:text-zinc-300", children: dictation.phase === "recording" ? "Aufnahme l\xE4uft \xB7 Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt \u2026" }) : null,
+                dictation.error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-amber-200", children: dictation.error }) : null,
+                error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-rose-300", children: error }) : null,
                 /* @__PURE__ */ jsx2(
                   "button",
                   {
                     type: "button",
-                    onClick: () => dictation.phase === "recording" ? dictation.stop() : void dictation.start(),
-                    disabled: dictation.phase === "transcribing",
-                    "aria-label": dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : "Einsprechen",
-                    className: cn("po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-xl po:border po:text-white po:shadow-lg po:focus-visible:outline-2 po:focus-visible:outline-violet-300 po:disabled:opacity-60", dictation.phase === "recording" ? "po:border-rose-300 po:bg-rose-600" : "po:border-violet-400 po:bg-violet-600"),
-                    children: dictation.phase === "recording" ? /* @__PURE__ */ jsx2(Square, { className: "po:h-6 po:w-6 po:fill-current" }) : dictation.phase === "transcribing" ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-6 po:w-6 po:animate-spin" }) : /* @__PURE__ */ jsx2(Mic, { className: "po:h-7 po:w-7" })
+                    onClick: () => void saveNote(),
+                    disabled: !note.trim() || saving || capturing || dictation.phase !== "idle",
+                    className: cn(press, "po:mt-3 po:flex po:min-h-14 po:w-full po:items-center po:justify-center po:rounded-2xl po:bg-gradient-to-r po:from-violet-500 po:to-fuchsia-600 po:text-base po:font-semibold po:text-white po:shadow-[0_10px_30px_rgba(139,92,246,0.35)] po:hover:brightness-110 po:disabled:opacity-40 po:disabled:shadow-none"),
+                    children: saving ? /* @__PURE__ */ jsxs2(Fragment, { children: [
+                      /* @__PURE__ */ jsx2(Loader2, { className: "po:mr-2 po:h-4 po:w-4 po:animate-spin" }),
+                      "Senden \u2026"
+                    ] }) : /* @__PURE__ */ jsxs2(Fragment, { children: [
+                      "Feedback senden ",
+                      /* @__PURE__ */ jsx2("kbd", { "aria-hidden": "true", className: "po:ml-3 po:hidden po:font-mono po:text-[10px] po:font-normal po:text-violet-100/80 po:sm:inline", children: "Strg + \u21E7 + Enter" })
+                    ] })
                   }
                 )
-              ] }),
-              dictation.phase !== "idle" ? /* @__PURE__ */ jsx2("p", { role: "status", className: "po:mt-1.5 po:text-xs po:text-zinc-300", children: dictation.phase === "recording" ? "Aufnahme l\xE4uft \xB7 Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt \u2026" }) : null,
-              dictation.error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-amber-200", children: dictation.error }) : null,
-              error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-rose-300", children: error }) : null,
-              /* @__PURE__ */ jsx2(
-                "button",
-                {
-                  type: "button",
-                  onClick: () => void saveNote(),
-                  disabled: !note.trim() || saving || dictation.phase !== "idle",
-                  className: "po:mt-2 po:min-h-12 po:w-full po:justify-center po:rounded-xl po:bg-violet-600 po:font-semibold po:text-white po:hover:bg-violet-700 po:disabled:opacity-40",
-                  children: saving ? /* @__PURE__ */ jsxs2(Fragment, { children: [
-                    /* @__PURE__ */ jsx2(Loader2, { className: "po:mr-2 po:h-4 po:w-4 po:animate-spin" }),
-                    "Senden \u2026"
-                  ] }) : /* @__PURE__ */ jsxs2(Fragment, { children: [
-                    "Feedback senden ",
-                    /* @__PURE__ */ jsx2("kbd", { "aria-hidden": "true", className: "po:ml-3 po:hidden po:font-mono po:text-[10px] po:font-normal po:text-violet-200/80 po:sm:inline", children: "Strg + \u21E7 + Enter" })
-                  ] })
-                }
-              )
+              ] })
             ] })
-          ] })
+          ]
         }
       )
     }
@@ -1436,12 +1498,12 @@ function PointOutWidget({
       disabled: capturing,
       "data-feedback-trigger": triggerVariant === "floating" || triggerVariant === "footer" ? "fixed" : void 0,
       className: cn(
-        "po:inline-flex po:items-center po:border po:transition po:hover:border-violet-500 po:hover:bg-zinc-800",
-        triggerVariant !== "icon" && "po:hover:-translate-y-0.5",
-        triggerVariant === "floating" ? "po:fixed po:bottom-5 po:right-5 po:z-[80] po:gap-2 po:rounded-full po:border-zinc-700/80 po:bg-zinc-900/90 po:px-4 po:py-2 po:text-sm po:text-zinc-100 po:shadow-lg po:shadow-black/30 po:backdrop-blur" : triggerVariant === "icon" ? "po:relative po:z-10 po:h-11 po:w-11 po:justify-center po:rounded-xl po:border-white/10 po:bg-transparent po:text-zinc-400 po:hover:text-zinc-100 po:focus-visible:outline-2 po:focus-visible:outline-violet-300" : triggerVariant === "footer" ? "po:fixed po:bottom-5 po:right-0 po:z-[80] po:min-h-10 po:gap-1.5 po:rounded-l-xl po:rounded-r-none po:border-violet-400/50 po:bg-zinc-900/95 po:px-3 po:py-2 po:text-sm po:text-zinc-100 po:shadow-md po:shadow-black/25 po:backdrop-blur po:sm:static po:sm:z-auto po:sm:gap-1.5 po:sm:rounded-none po:sm:border-0 po:sm:bg-transparent po:sm:px-0 po:sm:py-0 po:sm:text-xs po:sm:text-zinc-500 po:sm:shadow-none po:sm:backdrop-blur-none po:sm:hover:translate-y-0 po:sm:hover:border-transparent po:sm:hover:bg-transparent po:sm:hover:text-zinc-200" : "po:relative po:z-10 po:gap-2 po:rounded-full po:border-zinc-700/80 po:bg-zinc-900/90 po:px-4 po:py-2 po:text-sm po:text-zinc-100 po:shadow-lg po:shadow-black/30 po:backdrop-blur"
+        press,
+        "po:inline-flex po:items-center",
+        triggerVariant === "floating" ? "po:fixed po:right-4 po:bottom-[max(1rem,env(safe-area-inset-bottom))] po:z-[80] po:min-h-12 po:gap-2 po:rounded-full po:bg-zinc-900/85 po:px-5 po:text-sm po:font-medium po:text-zinc-50 po:shadow-[0_10px_30px_rgba(0,0,0,0.45)] po:ring-1 po:ring-white/15 po:backdrop-blur-md po:hover:bg-zinc-800 po:sm:right-5 po:sm:bottom-5" : triggerVariant === "icon" ? "po:relative po:z-10 po:h-11 po:w-11 po:justify-center po:rounded-xl po:text-zinc-400 po:ring-1 po:ring-white/10 po:hover:bg-white/10 po:hover:text-zinc-100" : triggerVariant === "footer" ? "po:fixed po:right-0 po:bottom-5 po:z-[80] po:min-h-11 po:gap-1.5 po:rounded-l-2xl po:bg-zinc-900/90 po:px-4 po:text-sm po:text-zinc-100 po:shadow-md po:ring-1 po:ring-violet-400/40 po:backdrop-blur po:sm:static po:sm:z-auto po:sm:min-h-0 po:sm:rounded-none po:sm:bg-transparent po:sm:px-0 po:sm:text-xs po:sm:text-zinc-500 po:sm:shadow-none po:sm:ring-0 po:sm:backdrop-blur-none po:sm:hover:text-zinc-200" : "po:relative po:z-10 po:min-h-11 po:gap-2 po:rounded-full po:bg-zinc-900/85 po:px-4 po:text-sm po:text-zinc-100 po:shadow-lg po:ring-1 po:ring-white/15 po:backdrop-blur po:hover:bg-zinc-800"
       ),
       children: [
-        capturing ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-4 po:w-4 po:animate-spin" }) : /* @__PURE__ */ jsx2(MessageSquarePlus, { className: cn("po:h-4 po:w-4", triggerVariant === "footer" && "po:sm:h-3.5 po:sm:w-3.5") }),
+        capturing ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-4 po:w-4 po:animate-spin" }) : triggerVariant === "floating" ? /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:relative po:grid po:h-6 po:w-6 po:place-items-center po:rounded-full po:bg-gradient-to-br po:from-violet-500 po:to-fuchsia-600", children: /* @__PURE__ */ jsx2(MessageSquarePlus, { className: "po:h-3.5 po:w-3.5 po:text-white" }) }) : /* @__PURE__ */ jsx2(MessageSquarePlus, { className: cn("po:h-4 po:w-4", triggerVariant === "footer" && "po:sm:h-3.5 po:sm:w-3.5") }),
         triggerVariant === "footer" ? /* @__PURE__ */ jsx2("span", { children: "Feedback" }) : triggerVariant !== "icon" ? "Feedback" : null
       ]
     }

@@ -9,6 +9,6 @@
   [data-pointout-root] button, [data-pointout-root] textarea { font: inherit; color: inherit; }
   [data-pointout-root] button { background: transparent; border: 0 solid transparent; padding: 0; cursor: pointer; }
   [data-pointout-root] button:disabled { cursor: not-allowed; }
-  [data-pointout-root] textarea { border: 1px solid #3f3f46; padding: 0.75rem; }
+  [data-pointout-root] textarea { border: 1px solid rgb(255 255 255 / 0.12); padding: 0.75rem 0.9rem; }
   [data-pointout-root] h3, [data-pointout-root] p { margin: 0; }
 }

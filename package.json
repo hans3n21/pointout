@@ -1,6 +1,6 @@
 {
   "name": "@hans3n21/pointout",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Screenshot-first feedback for React web apps",
   "type": "module",
   "engines": { "node": ">=22" },

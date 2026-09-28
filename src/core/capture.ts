@@ -16,6 +16,8 @@ const RASTER_MARK = "data-pointout-raster";
 const XLINK = "http://www.w3.org/1999/xlink";
 
 type RasterizeSvg = (svg: SVGSVGElement, width: number, height: number) => Promise<string>;
+/** A picture as a data URL no larger than the screen, or false to embed it unchanged. */
+type ShrinkPicture = (url: string) => Promise<string | false>;
 
 function readAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -78,6 +80,62 @@ async function paintPictureSvgs(rasterize: RasterizeSvg): Promise<{ images: stri
     marked.push(svg);
   }
   return { images, clear: () => marked.forEach((svg) => svg.removeAttribute(RASTER_MARK)) };
+}
+
+/**
+ * The copy carries every picture inline. A full-size photo or print file costs a
+ * phone seconds to encode and decode although the screenshot shows it at screen
+ * size at most, so it is embedded at that size. Anything that cannot be read
+ * (SVG, no CORS) is left to the renderer's own fetch.
+ */
+async function shrinkToScreen(url: string): Promise<string | false> {
+  if (url.startsWith("data:")) return false;
+  const picture = new Image();
+  picture.crossOrigin = "anonymous";
+  picture.src = new URL(url, document.baseURI).href;
+  try {
+    await picture.decode();
+  } catch {
+    return false;
+  }
+  const limit = Math.max(window.innerWidth, window.innerHeight) * Math.min(window.devicePixelRatio || 1, 2);
+  const scale = limit / Math.max(picture.naturalWidth, picture.naturalHeight);
+  if (!picture.naturalWidth || !picture.naturalHeight || scale >= 1) return false;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(picture.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(picture.naturalHeight * scale));
+  canvas.getContext("2d")?.drawImage(picture, 0, 0, canvas.width, canvas.height);
+  try {
+    return canvas.toDataURL("image/webp", 0.9);
+  } catch {
+    return false;
+  }
+}
+
+const CSS_URL = /url\((['"]?)([^'"]+?)\1\)/g;
+
+/**
+ * The renderer copies ::before/::after into a style sheet but, unlike element
+ * styles, never embeds their pictures; a link inside the drawn SVG stays empty.
+ * (WirdEcht's clothesline garden is such a picture.) Swap the links for data.
+ */
+async function embedPseudoPictures(svg: SVGSVGElement, shrink: ShrinkPicture) {
+  for (const sheet of Array.from(svg.querySelectorAll("style"))) {
+    const css = sheet.textContent ?? "";
+    const links = new Set(Array.from(css.matchAll(CSS_URL), (match) => match[2]).filter((link) => !link.startsWith("data:")));
+    let embedded = css;
+    for (const link of links) {
+      try {
+        const data = await shrink(link) || await fetch(new URL(link, document.baseURI).href)
+          .then((response) => { if (!response.ok) throw new Error(`Bild ${response.status}`); return response.blob(); })
+          .then(readAsDataUrl);
+        embedded = embedded.replace(CSS_URL, (whole, quote: string, found: string) => found === link ? `url(${quote}${data}${quote})` : whole);
+      } catch {
+        // Unreadable picture: that area stays empty, the rest of the screenshot counts.
+      }
+    }
+    if (embedded !== css) sheet.textContent = embedded;
+  }
 }
 
 /** True when every sampled pixel has (almost) the same colour. */
@@ -181,7 +239,7 @@ function prepareCopy(root: Element, page: { left: number; top: number }, painted
   }
 }
 
-async function drawWithBrowser(backgroundColor: string, rasterizeSvg: RasterizeSvg): Promise<string> {
+async function drawWithBrowser(backgroundColor: string, rasterizeSvg: RasterizeSvg, shrinkPicture: ShrinkPicture): Promise<string> {
   const { domToPng } = await import("modern-screenshot");
   const pictures = await paintPictureSvgs(rasterizeSvg);
   const layout = markLayout();
@@ -192,8 +250,10 @@ async function drawWithBrowser(backgroundColor: string, rasterizeSvg: RasterizeS
       scale: 1,
       backgroundColor,
       timeout: 4_000,
+      fetchFn: shrinkPicture,
       filter: (node) => !(node instanceof Element && node.hasAttribute("data-feedback-screenshot-ignore")),
       onCloneNode: (root) => { if (root instanceof Element) prepareCopy(root, layout.page, pictures.images); },
+      onCreateForeignObjectSvg: (svg) => embedPseudoPictures(svg, shrinkPicture),
     });
   } finally {
     layout.clear();
@@ -201,9 +261,10 @@ async function drawWithBrowser(backgroundColor: string, rasterizeSvg: RasterizeS
   }
 }
 
-export async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg }: {
+export async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreen }: {
   isBlank?: (dataUrl: string) => Promise<boolean>;
   rasterizeSvg?: RasterizeSvg;
+  shrinkPicture?: ShrinkPicture;
 } = {}): Promise<{ dataUrl: string }> {
   const sourceCanvases = Array.from(document.querySelectorAll("canvas"));
   const bitmaps = sourceCanvases.map((source) => {
@@ -220,7 +281,7 @@ export async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = pa
 
   const backgroundColor = pageBackground();
   try {
-    const drawn = await drawWithBrowser(backgroundColor, rasterizeSvg);
+    const drawn = await drawWithBrowser(backgroundColor, rasterizeSvg, shrinkPicture);
     if (drawn.startsWith("data:image/png;base64,") && !(await isBlank(drawn))) return checked(drawn);
   } catch {
     // Browser renderer unavailable (e.g. foreignObject blocked): rebuild instead.

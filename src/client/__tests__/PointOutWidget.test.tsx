@@ -13,6 +13,12 @@ vi.mock("../useDictation", () => ({
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.resetAllMocks(); document.body.innerHTML = ""; });
 
+// The sheet opens at once; the capture finishes inside it.
+async function sheetReady() {
+  await screen.findByRole("dialog", { name: "Feedback geben" });
+  await waitFor(() => expect(screen.queryByText(/Screenshot wird aufgenommen/)).toBeNull());
+}
+
 const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/dQAAAABJRU5ErkJggg==";
 
 describe("PointOutWidget", () => {
@@ -31,16 +37,22 @@ describe("PointOutWidget", () => {
     }
   });
 
-  it("captures before opening its overlay", async () => {
+  it("opens at once and lets the screenshot follow, without locking the page mid-capture", async () => {
     let complete!: (value: { dataUrl: string }) => void;
     vi.mocked(captureAppScreen).mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
     render(<PointOutWidget projectId="sample" projectName="Sample" />);
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    expect(captureAppScreen).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("dialog")).toBeNull();
-    complete({ dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/dQAAAABJRU5ErkJggg==" });
-    expect(await screen.findByRole("dialog", { name: "Feedback geben" })).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Screenshot für dein Feedback" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Feedback geben" })).toBeTruthy();
+    expect(screen.getByText(/Screenshot wird aufgenommen/)).toBeTruthy();
+    expect(document.body.style.overflow).not.toBe("hidden");
+    await waitFor(() => expect(captureAppScreen).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Beim Warten geschrieben" } });
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Feedback senden/ }).disabled).toBe(true);
+    complete({ dataUrl: PIXEL });
+    expect(await screen.findByRole("img", { name: "Screenshot für dein Feedback" })).toBeTruthy();
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Feedback-Text" }).value).toBe("Beim Warten geschrieben");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: /Feedback senden/ }).disabled).toBe(false);
   });
 
   it("keeps text and image after a network failure and resumes the draft", async () => {
@@ -48,7 +60,7 @@ describe("PointOutWidget", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     render(<PointOutWidget projectId="sample" projectName="Sample" />);
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    await screen.findByRole("dialog");
+    await sheetReady();
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Fehler beim Speichern" } });
     fireEvent.click(screen.getByRole("button", { name: /Feedback senden/ }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Entwurf bleibt erhalten"));
@@ -67,7 +79,7 @@ describe("PointOutWidget", () => {
     render(<PointOutWidget projectId="sample" projectName="Sample" context={() => ({ ansicht: "Instrumente", monitor: false })} />);
     fireEvent.click(screen.getByRole("button", { name: "Hoeren" }));
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    await screen.findByRole("dialog");
+    await sheetReady();
     expect(screen.getByRole("checkbox", { name: /Letzte Schritte mitsenden \(1\)/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Fehler" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Ton bleibt weg" } });
@@ -88,7 +100,7 @@ describe("PointOutWidget", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hoeren" }));
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    await screen.findByRole("dialog");
+    await sheetReady();
     fireEvent.click(screen.getByRole("button", { name: "Schritte ansehen" }));
     fireEvent.click(screen.getByRole("button", { name: "Schritt entfernen: Hoeren" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Speichern hängt" } });
@@ -107,7 +119,7 @@ describe("PointOutWidget", () => {
     render(<PointOutWidget projectId="sample" projectName="Sample" />);
     fireEvent.click(screen.getByRole("button", { name: "Hoeren" }));
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    await screen.findByRole("dialog");
+    await sheetReady();
     fireEvent.click(screen.getByRole("checkbox", { name: /Letzte Schritte mitsenden/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Idee" } });
     fireEvent.click(screen.getByRole("button", { name: /Feedback senden/ }));
@@ -121,12 +133,12 @@ describe("PointOutWidget", () => {
       .mockResolvedValueOnce({ dataUrl: "data:image/png;base64,c2Vjb25k" });
     render(<PointOutWidget projectId="sample" projectName="Sample" />);
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
-    await screen.findByRole("dialog");
+    await sheetReady();
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Mein Entwurf" } });
     fireEvent.click(screen.getByRole("button", { name: "Schließen" }));
     fireEvent.click(screen.getByRole("button", { name: "Feedback geben" }));
     await waitFor(() => expect(captureAppScreen).toHaveBeenCalledTimes(2));
-    await screen.findByRole("dialog");
+    await sheetReady();
     expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Feedback-Text" }).value).toBe("Mein Entwurf");
     expect(screen.getByRole("img", { name: "Screenshot für dein Feedback" }).getAttribute("src")).toContain("c2Vjb25k");
   });

@@ -130,6 +130,32 @@ describe("PointOut capture", () => {
     expect(copy!.querySelector("#shirt")).not.toBeNull();
   });
 
+  it("embeds pictures of ::before/::after backgrounds, which the renderer leaves as links", async () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const style = document.createElement("style");
+    style.textContent = `.a1::before { background-image: url("https://app.test/garten.webp"); }\n`
+      + `.a2::after { mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"); background-image: url(https://app.test/garten.webp); }`;
+    svg.append(style);
+    renderer.mockImplementation(async (_node, options) => {
+      await (options as RendererOptions).onCreateForeignObjectSvg?.(svg);
+      return BROWSER_SHOT;
+    });
+    const shrinkPicture = vi.fn(async () => "data:image/webp;base64,Z2FydGVu");
+    await captureAppScreen({ isBlank: async () => false, shrinkPicture });
+    expect(shrinkPicture).toHaveBeenCalledWith("https://app.test/garten.webp");
+    expect(style.textContent).not.toContain("https://app.test/garten.webp");
+    expect(style.textContent.match(/data:image\/webp;base64,Z2FydGVu/g)).toHaveLength(2);
+    expect(style.textContent).toContain("data:image/svg+xml,%3Csvg");
+  });
+
+  it("hands every picture to the renderer at screen size instead of full size", async () => {
+    renderer.mockResolvedValue(BROWSER_SHOT);
+    const shrinkPicture = vi.fn(async () => false as const);
+    await captureAppScreen({ isBlank: async () => false, shrinkPicture });
+    const [, options] = renderer.mock.calls[0] as [Node, RendererOptions];
+    expect(options.fetchFn).toBe(shrinkPicture);
+  });
+
   it("falls back to the rebuilt screenshot when the browser renderer fails", async () => {
     renderer.mockRejectedValue(new Error("foreignObject not supported"));
     vi.mocked(html2canvas).mockResolvedValue({ toDataURL: () => FALLBACK_SHOT } as HTMLCanvasElement);

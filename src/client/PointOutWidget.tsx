@@ -127,15 +127,17 @@ export function PointOutWidget({
     const timer = window.setTimeout(() => { setOpen(false); setSaved(false); }, 1_800);
     return () => window.clearTimeout(timer);
   }, [saved]);
+  // Lock the page only once the picture is taken: removing the scrollbar would
+  // shift the layout in the middle of the capture.
   useEffect(() => {
-    if (!open) return;
+    if (!open || capturing) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     dialogRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
     window.addEventListener("keydown", onKeyDown);
     return () => { document.body.style.overflow = previous; window.removeEventListener("keydown", onKeyDown); };
-  }, [open]);
+  }, [open, capturing]);
 
   async function takeScreenshot() {
     const run = ++captureRun.current;
@@ -145,6 +147,12 @@ export function PointOutWidget({
     setScreenshot(null);
     setCaptureSource(null);
     setMarks([]);
+    // The sheet is there at once and the picture follows; on a tablet the wait
+    // for "nothing" took seconds. The capture leaves the sheet out and starts
+    // only once it is drawn, otherwise it would block the opening.
+    setOpen(true);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    if (run !== captureRun.current) return;
     let captureTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
@@ -164,7 +172,7 @@ export function PointOutWidget({
       if (run === captureRun.current) setCaptureError(cause instanceof Error ? cause.message : "Screenshot fehlgeschlagen. Bitte wähle ein Bild aus.");
     } finally {
       if (captureTimer) clearTimeout(captureTimer);
-      if (run === captureRun.current) { setCapturing(false); setOpen(true); }
+      if (run === captureRun.current) setCapturing(false);
     }
   }
   function openDialog() {
@@ -231,7 +239,7 @@ export function PointOutWidget({
     }
   }
   async function saveNote() {
-    if (!note.trim() || saving || dictation.phase !== "idle") return;
+    if (!note.trim() || saving || capturing || dictation.phase !== "idle") return;
     setSaving(true);
     setError("");
     try {
@@ -281,9 +289,14 @@ export function PointOutWidget({
     }
   }
 
+  // Touch first: every target is at least 44 px, labels stay visible, the text
+  // field uses 16 px so phones do not zoom in, and presses give a visible dip.
+  const press = "po:transition po:duration-150 po:active:scale-[0.96] po:focus-visible:outline-2 po:focus-visible:outline-offset-2 po:focus-visible:outline-violet-300";
+  const chip = cn(press, "po:inline-flex po:min-h-12 po:items-center po:justify-center po:gap-2 po:whitespace-nowrap po:rounded-2xl po:bg-white/[0.06] po:px-3 po:text-sm po:text-zinc-200 po:ring-1 po:ring-white/10 po:hover:bg-white/10 po:disabled:opacity-40");
+
   const panel = open ? (
     <div data-pointout-root data-feedback-screenshot-ignore data-testid="feedback-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}
-      className="po:fixed po:inset-0 po:z-[100] po:flex po:items-end po:justify-center po:bg-black/80 po:p-0 po:sm:items-center po:sm:p-5">
+      className="po:fixed po:inset-0 po:z-[100] po:flex po:items-end po:justify-center po:bg-zinc-950/70 po:p-0 po:backdrop-blur-sm po:sm:items-center po:sm:p-6">
       <div ref={dialogRef} data-feedback-panel role="dialog" aria-modal="true" aria-label="Feedback geben" tabIndex={-1}
         onKeyDown={(event) => {
           if (event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
@@ -291,46 +304,54 @@ export function PointOutWidget({
             void saveNote();
           }
         }}
-        className="po:flex po:h-[var(--pointout-height,100dvh)] po:w-full po:flex-col po:overflow-hidden po:bg-zinc-900 po:shadow-[0_24px_80px_rgba(0,0,0,0.55)] po:outline-none po:sm:h-auto po:sm:max-h-[92dvh] po:sm:max-w-2xl po:sm:rounded-2xl po:sm:border po:sm:border-zinc-700/80">
+        className="po:relative po:flex po:h-[var(--pointout-height,100dvh)] po:w-full po:flex-col po:overflow-hidden po:rounded-t-[28px] po:bg-zinc-950 po:bg-[radial-gradient(120%_70%_at_0%_0%,rgba(139,92,246,0.22),transparent_55%),radial-gradient(90%_60%_at_100%_100%,rgba(236,72,153,0.12),transparent_60%)] po:shadow-[0_-12px_60px_rgba(0,0,0,0.6)] po:outline-none po:ring-1 po:ring-white/10 po:sm:h-auto po:sm:max-h-[92dvh] po:sm:max-w-2xl po:sm:rounded-[28px] po:sm:shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
+        <span aria-hidden="true" className="po:mx-auto po:mt-2 po:block po:h-1.5 po:w-10 po:shrink-0 po:rounded-full po:bg-white/20 po:sm:hidden" />
         {saved ? (
-          <div data-testid="feedback-saved-state" className="po:flex po:flex-1 po:flex-col po:items-center po:justify-center po:gap-3 po:px-5 po:text-center">
-            <CheckCircle2 className="po:h-10 po:w-10 po:text-emerald-400" />
-            <p className="po:font-semibold po:text-white">Danke für dein Feedback!</p>
+          <div data-testid="feedback-saved-state" className="po:flex po:flex-1 po:flex-col po:items-center po:justify-center po:gap-3 po:px-6 po:py-10 po:text-center">
+            <span className="po:grid po:h-16 po:w-16 po:place-items-center po:rounded-full po:bg-emerald-400/15 po:ring-1 po:ring-emerald-300/30"><CheckCircle2 className="po:h-9 po:w-9 po:text-emerald-300" /></span>
+            <p className="po:text-lg po:font-semibold po:text-white">Danke für dein Feedback!</p>
             <p className="po:text-sm po:text-zinc-400">Dein Hinweis ist angekommen.</p>
           </div>
         ) : (
           <>
-            <header className="po:flex po:shrink-0 po:items-center po:justify-between po:gap-3 po:border-b po:border-zinc-800 po:px-4 po:py-2.5 po:sm:px-5">
+            <header className="po:flex po:shrink-0 po:items-center po:justify-between po:gap-3 po:px-4 po:pt-2 po:pb-3 po:sm:px-6 po:sm:pt-5">
               <div className="po:min-w-0">
-                <h3 className="po:flex po:items-center po:gap-2 po:text-base po:font-semibold po:text-white"><span aria-hidden="true" className="po:h-2 po:w-2 po:rounded-full po:bg-rose-400" />Feedback</h3>
+                <h3 className="po:flex po:items-center po:gap-2 po:text-lg po:font-semibold po:tracking-tight po:text-white">
+                  <span aria-hidden="true" className="po:h-2.5 po:w-2.5 po:rounded-full po:bg-gradient-to-br po:from-violet-400 po:to-fuchsia-500 po:shadow-[0_0_12px_rgba(192,132,252,0.8)]" />Feedback
+                </h3>
                 <p className="po:truncate po:text-xs po:text-zinc-400">{resumedDraft ? "Ungesendeter Entwurf · Bild von vorher" : `${projectName} · Stelle markieren, dann beschreiben`}</p>
               </div>
-              <button type="button" aria-label="Schließen" onClick={() => setOpen(false)} className="po:grid po:h-11 po:w-11 po:shrink-0 po:place-items-center po:rounded-full po:text-zinc-300 po:hover:bg-zinc-800 po:focus-visible:outline-2 po:focus-visible:outline-violet-300"><X className="po:h-5 po:w-5" /></button>
+              <button type="button" aria-label="Schließen" onClick={() => setOpen(false)} className={cn(press, "po:grid po:h-12 po:w-12 po:shrink-0 po:place-items-center po:rounded-full po:bg-white/[0.06] po:text-zinc-200 po:ring-1 po:ring-white/10 po:hover:bg-white/10")}><X className="po:h-5 po:w-5" /></button>
             </header>
-            <div className="po:min-h-0 po:flex-1 po:overflow-y-auto po:overscroll-contain po:px-3 po:py-3 po:sm:px-5 po:sm:py-4">
+            <div className="po:min-h-0 po:flex-1 po:overflow-y-auto po:overscroll-contain po:px-3 po:pb-3 po:sm:px-6 po:sm:pb-4">
               <div className="po:relative" onContextMenu={(event) => { event.preventDefault(); setPasteMenu(true); }}>
-                {screenshot ? <PointOutMarkup screenshot={screenshot} marks={marks} onChange={setMarks} /> : <div className="po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-zinc-700 po:bg-zinc-950 po:p-5 po:text-center po:text-sm po:text-zinc-400">Kein Screenshot vorhanden – wähle ein Bild aus oder beschreibe den Fehler direkt.</div>}
+                {screenshot ? <PointOutMarkup screenshot={screenshot} marks={marks} onChange={setMarks} />
+                  : capturing ? (
+                    <div role="status" className="po:grid po:min-h-56 po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10">
+                      <span className="po:inline-flex po:items-center po:gap-2"><Loader2 className="po:h-4 po:w-4 po:animate-spin" />Screenshot wird aufgenommen … du kannst schon schreiben oder einsprechen.</span>
+                    </div>
+                  ) : <div className="po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-white/15 po:bg-white/[0.03] po:p-5 po:text-center po:text-sm po:text-zinc-400">Kein Screenshot vorhanden – wähle ein Bild aus oder beschreibe den Fehler direkt.</div>}
                 {pasteMenu ? <button type="button" onClick={() => { setPasteMenu(false); void pasteFromClipboard(); }}
-                  className="po:absolute po:right-2 po:top-2 po:z-10 po:min-h-11 po:rounded-lg po:border po:border-zinc-600 po:bg-zinc-800 po:px-3 po:text-sm po:text-white po:shadow-lg">
+                  className={cn(press, "po:absolute po:right-2 po:top-2 po:z-10 po:min-h-12 po:rounded-2xl po:bg-zinc-800 po:px-4 po:text-sm po:text-white po:shadow-lg po:ring-1 po:ring-white/15")}>
                   Bild aus Zwischenablage einfügen
                 </button> : null}
               </div>
-              {captureError ? <p role="alert" className="po:mt-2 po:text-sm po:text-amber-200">{captureError}</p> : null}
-              <div className="po:mt-2 po:flex po:items-center po:gap-1 po:overflow-x-auto po:text-xs">
+              {captureError ? <p role="alert" className="po:mt-2 po:rounded-xl po:bg-amber-400/10 po:px-3 po:py-2 po:text-sm po:text-amber-200">{captureError}</p> : null}
+              <div className="po:mt-3 po:flex po:items-stretch po:gap-2">
                 <input ref={fileRef} type="file" accept="image/*" aria-label="Screenshot auswählen" className="po:sr-only" onChange={(event) => void selectImage(event.target.files?.[0])} />
-                <button type="button" onClick={() => fileRef.current?.click()} className="po:inline-flex po:min-h-11 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800"><ImagePlus className="po:h-4 po:w-4" />Bild wählen</button>
-                <button type="button" aria-label="Screenshot aus Zwischenablage einfügen" onClick={() => void pasteFromClipboard()} className="po:inline-flex po:min-h-11 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800"><ClipboardPaste className="po:h-4 po:w-4" />Einfügen</button>
-                <button type="button" aria-label="Aktuellen Bildschirm aufnehmen" onClick={() => { setOpen(false); void takeScreenshot(); }} className="po:inline-flex po:min-h-11 po:shrink-0 po:items-center po:gap-1.5 po:rounded-lg po:px-2.5 po:text-zinc-300 po:hover:bg-zinc-800"><RotateCcw className="po:h-4 po:w-4" /><span className="po:sm:hidden">Aktuell</span><span className="po:hidden po:sm:inline">Neu aufnehmen</span></button>
-                {screenshot ? <button type="button" aria-label="Bild entfernen" title="Bild entfernen" onClick={() => { setScreenshot(null); setMarks([]); setCaptureSource(null); }} className="po:grid po:min-h-11 po:min-w-11 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-400 po:hover:bg-zinc-800"><X className="po:h-4 po:w-4" /></button> : null}
+                <button type="button" onClick={() => fileRef.current?.click()} className={cn(chip, "po:flex-1")}><ImagePlus className="po:h-4 po:w-4" />Bild wählen</button>
+                <button type="button" aria-label="Screenshot aus Zwischenablage einfügen" onClick={() => void pasteFromClipboard()} className={cn(chip, "po:flex-1")}><ClipboardPaste className="po:h-4 po:w-4" />Einfügen</button>
+                <button type="button" aria-label="Aktuellen Bildschirm aufnehmen" disabled={capturing} onClick={() => void takeScreenshot()} className={cn(chip, "po:flex-1")}><RotateCcw className="po:h-4 po:w-4" /><span className="po:sm:hidden">Neu</span><span className="po:hidden po:sm:inline">Neu aufnehmen</span></button>
+                {screenshot ? <button type="button" aria-label="Bild entfernen" title="Bild entfernen" onClick={() => { setScreenshot(null); setMarks([]); setCaptureSource(null); }} className={cn(chip, "po:w-12 po:shrink-0 po:px-0 po:text-zinc-400")}><X className="po:h-4 po:w-4" /></button> : null}
               </div>
               {steps.length ? (
-                <div className="po:mt-2 po:rounded-xl po:border po:border-zinc-800 po:bg-zinc-950/60 po:px-3 po:text-xs po:text-zinc-300">
+                <div className="po:mt-3 po:rounded-2xl po:bg-white/[0.04] po:px-3 po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10">
                   <div className="po:flex po:items-center po:justify-between po:gap-2">
-                    <label className="po:flex po:min-h-11 po:cursor-pointer po:items-center po:gap-2">
-                      <input type="checkbox" checked={sendSteps} onChange={(event) => setSendSteps(event.target.checked)} className="po:h-4 po:w-4 po:accent-violet-500" />
+                    <label className="po:flex po:min-h-12 po:cursor-pointer po:items-center po:gap-3">
+                      <input type="checkbox" checked={sendSteps} onChange={(event) => setSendSteps(event.target.checked)} className="po:h-5 po:w-5 po:accent-violet-500" />
                       Letzte Schritte mitsenden ({steps.length})
                     </label>
-                    <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((current) => !current)} className="po:min-h-11 po:shrink-0 po:rounded-lg po:px-2.5 po:text-zinc-400 po:hover:bg-zinc-800">
+                    <button type="button" aria-expanded={showSteps} onClick={() => setShowSteps((current) => !current)} className={cn(press, "po:min-h-11 po:shrink-0 po:rounded-xl po:px-3 po:text-xs po:text-zinc-400 po:hover:bg-white/10")}>
                       {showSteps ? "Schritte ausblenden" : "Schritte ansehen"}
                     </button>
                   </div>
@@ -341,7 +362,7 @@ export function PointOutWidget({
                           <li key={`${step.seconds_before}-${step.kind}-${step.label}-${index}`} className="po:flex po:items-center po:justify-between po:gap-2">
                             <span className={cn("po:min-w-0 po:truncate po:font-mono po:text-[11px]", !sendSteps && "po:text-zinc-600 po:line-through")}>{stepLine(step)}</span>
                             <button type="button" aria-label={`Schritt entfernen: ${step.label}`} onClick={() => setSteps((current) => current.filter((_, position) => position !== index))}
-                              className="po:grid po:h-8 po:w-8 po:shrink-0 po:place-items-center po:rounded-lg po:text-zinc-500 po:hover:bg-zinc-800 po:hover:text-zinc-200"><X className="po:h-3.5 po:w-3.5" /></button>
+                              className={cn(press, "po:grid po:h-11 po:w-11 po:shrink-0 po:place-items-center po:rounded-xl po:text-zinc-500 po:hover:bg-white/10 po:hover:text-zinc-200")}><X className="po:h-4 po:w-4" /></button>
                           </li>
                         ))}
                       </ol>
@@ -351,30 +372,32 @@ export function PointOutWidget({
                 </div>
               ) : null}
             </div>
-            <div data-testid="pointout-composer" className="po:shrink-0 po:border-t po:border-zinc-700/80 po:bg-zinc-950 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:sm:px-5 po:sm:pb-4">
-              <div role="group" aria-label="Art des Feedbacks (optional)" className="po:mb-2 po:flex po:gap-1.5">
+            <div data-testid="pointout-composer" className="po:shrink-0 po:border-t po:border-white/10 po:bg-zinc-950/80 po:px-3 po:pt-3 po:pb-[max(0.75rem,env(safe-area-inset-bottom))] po:backdrop-blur po:sm:px-6 po:sm:pb-5">
+              <div role="group" aria-label="Art des Feedbacks (optional)" className="po:mb-3 po:flex po:gap-2">
                 {CATEGORIES.map(({ value, label }) => (
                   <button key={value} type="button" aria-pressed={category === value} onClick={() => setCategory((current) => current === value ? null : value)}
-                    className={cn("po:min-h-10 po:rounded-full po:border po:px-3.5 po:text-xs", category === value ? "po:border-violet-400 po:bg-violet-600/30 po:text-violet-100" : "po:border-zinc-700 po:text-zinc-300 po:hover:bg-zinc-800")}>
+                    className={cn(press, "po:min-h-11 po:flex-1 po:rounded-full po:px-4 po:text-sm po:font-medium po:ring-1 po:sm:flex-none", category === value ? "po:bg-violet-500 po:text-white po:ring-violet-300/60 po:shadow-[0_0_18px_rgba(139,92,246,0.45)]" : "po:bg-white/[0.05] po:text-zinc-300 po:ring-white/10 po:hover:bg-white/10")}>
                     {label}
                   </button>
                 ))}
               </div>
               <div className="po:flex po:items-end po:gap-2">
                 <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Was ist passiert?" rows={2} maxLength={4000}
-                  aria-label="Feedback-Text" className="po:min-h-16 po:flex-1 po:resize-none po:rounded-xl po:border-zinc-700 po:bg-zinc-900 po:text-zinc-100 po:placeholder:text-zinc-500" />
+                  aria-label="Feedback-Text" className="po:min-h-16 po:flex-1 po:resize-none po:rounded-2xl po:bg-white/[0.05] po:text-base po:text-zinc-100 po:outline-none po:placeholder:text-zinc-500 po:focus:border-violet-400/70" />
                 <button type="button" onClick={() => dictation.phase === "recording" ? dictation.stop() : void dictation.start()}
                   disabled={dictation.phase === "transcribing"} aria-label={dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : "Einsprechen"}
-                  className={cn("po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-xl po:border po:text-white po:shadow-lg po:focus-visible:outline-2 po:focus-visible:outline-violet-300 po:disabled:opacity-60", dictation.phase === "recording" ? "po:border-rose-300 po:bg-rose-600" : "po:border-violet-400 po:bg-violet-600")}>
-                  {dictation.phase === "recording" ? <Square className="po:h-6 po:w-6 po:fill-current" /> : dictation.phase === "transcribing" ? <Loader2 className="po:h-6 po:w-6 po:animate-spin" /> : <Mic className="po:h-7 po:w-7" />}
+                  className={cn(press, "po:relative po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-2xl po:text-white po:shadow-lg po:disabled:opacity-60",
+                    dictation.phase === "recording" ? "po:bg-rose-500 po:shadow-rose-900/50" : "po:bg-gradient-to-br po:from-violet-500 po:to-fuchsia-600 po:shadow-violet-900/50")}>
+                  {dictation.phase === "recording" ? <span aria-hidden="true" className="po:absolute po:inset-0 po:animate-ping po:rounded-2xl po:bg-rose-400/40" /> : null}
+                  {dictation.phase === "recording" ? <Square className="po:relative po:h-6 po:w-6 po:fill-current" /> : dictation.phase === "transcribing" ? <Loader2 className="po:h-6 po:w-6 po:animate-spin" /> : <Mic className="po:h-7 po:w-7" />}
                 </button>
               </div>
-              {dictation.phase !== "idle" ? <p role="status" className="po:mt-1.5 po:text-xs po:text-zinc-300">{dictation.phase === "recording" ? "Aufnahme läuft · Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt …"}</p> : null}
+              {dictation.phase !== "idle" ? <p role="status" className="po:mt-2 po:text-xs po:text-zinc-300">{dictation.phase === "recording" ? "Aufnahme läuft · Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt …"}</p> : null}
               {dictation.error ? <p role="alert" className="po:mt-2 po:text-sm po:text-amber-200">{dictation.error}</p> : null}
               {error ? <p role="alert" className="po:mt-2 po:text-sm po:text-rose-300">{error}</p> : null}
-              <button type="button" onClick={() => void saveNote()} disabled={!note.trim() || saving || dictation.phase !== "idle"}
-                className="po:mt-2 po:min-h-12 po:w-full po:justify-center po:rounded-xl po:bg-violet-600 po:font-semibold po:text-white po:hover:bg-violet-700 po:disabled:opacity-40">
-                {saving ? <><Loader2 className="po:mr-2 po:h-4 po:w-4 po:animate-spin" />Senden …</> : <>Feedback senden <kbd aria-hidden="true" className="po:ml-3 po:hidden po:font-mono po:text-[10px] po:font-normal po:text-violet-200/80 po:sm:inline">Strg + ⇧ + Enter</kbd></>}
+              <button type="button" onClick={() => void saveNote()} disabled={!note.trim() || saving || capturing || dictation.phase !== "idle"}
+                className={cn(press, "po:mt-3 po:flex po:min-h-14 po:w-full po:items-center po:justify-center po:rounded-2xl po:bg-gradient-to-r po:from-violet-500 po:to-fuchsia-600 po:text-base po:font-semibold po:text-white po:shadow-[0_10px_30px_rgba(139,92,246,0.35)] po:hover:brightness-110 po:disabled:opacity-40 po:disabled:shadow-none")}>
+                {saving ? <><Loader2 className="po:mr-2 po:h-4 po:w-4 po:animate-spin" />Senden …</> : <>Feedback senden <kbd aria-hidden="true" className="po:ml-3 po:hidden po:font-mono po:text-[10px] po:font-normal po:text-violet-100/80 po:sm:inline">Strg + ⇧ + Enter</kbd></>}
               </button>
             </div>
           </>
@@ -388,14 +411,15 @@ export function PointOutWidget({
       data-feedback-screenshot-ignore onClick={openDialog} disabled={capturing}
       data-feedback-trigger={triggerVariant === "floating" || triggerVariant === "footer" ? "fixed" : undefined}
       className={cn(
-        "po:inline-flex po:items-center po:border po:transition po:hover:border-violet-500 po:hover:bg-zinc-800",
-        triggerVariant !== "icon" && "po:hover:-translate-y-0.5",
-        triggerVariant === "floating" ? "po:fixed po:bottom-5 po:right-5 po:z-[80] po:gap-2 po:rounded-full po:border-zinc-700/80 po:bg-zinc-900/90 po:px-4 po:py-2 po:text-sm po:text-zinc-100 po:shadow-lg po:shadow-black/30 po:backdrop-blur"
-          : triggerVariant === "icon" ? "po:relative po:z-10 po:h-11 po:w-11 po:justify-center po:rounded-xl po:border-white/10 po:bg-transparent po:text-zinc-400 po:hover:text-zinc-100 po:focus-visible:outline-2 po:focus-visible:outline-violet-300"
-          : triggerVariant === "footer" ? "po:fixed po:bottom-5 po:right-0 po:z-[80] po:min-h-10 po:gap-1.5 po:rounded-l-xl po:rounded-r-none po:border-violet-400/50 po:bg-zinc-900/95 po:px-3 po:py-2 po:text-sm po:text-zinc-100 po:shadow-md po:shadow-black/25 po:backdrop-blur po:sm:static po:sm:z-auto po:sm:gap-1.5 po:sm:rounded-none po:sm:border-0 po:sm:bg-transparent po:sm:px-0 po:sm:py-0 po:sm:text-xs po:sm:text-zinc-500 po:sm:shadow-none po:sm:backdrop-blur-none po:sm:hover:translate-y-0 po:sm:hover:border-transparent po:sm:hover:bg-transparent po:sm:hover:text-zinc-200"
-          : "po:relative po:z-10 po:gap-2 po:rounded-full po:border-zinc-700/80 po:bg-zinc-900/90 po:px-4 po:py-2 po:text-sm po:text-zinc-100 po:shadow-lg po:shadow-black/30 po:backdrop-blur"
+        press, "po:inline-flex po:items-center",
+        triggerVariant === "floating" ? "po:fixed po:right-4 po:bottom-[max(1rem,env(safe-area-inset-bottom))] po:z-[80] po:min-h-12 po:gap-2 po:rounded-full po:bg-zinc-900/85 po:px-5 po:text-sm po:font-medium po:text-zinc-50 po:shadow-[0_10px_30px_rgba(0,0,0,0.45)] po:ring-1 po:ring-white/15 po:backdrop-blur-md po:hover:bg-zinc-800 po:sm:right-5 po:sm:bottom-5"
+          : triggerVariant === "icon" ? "po:relative po:z-10 po:h-11 po:w-11 po:justify-center po:rounded-xl po:text-zinc-400 po:ring-1 po:ring-white/10 po:hover:bg-white/10 po:hover:text-zinc-100"
+          : triggerVariant === "footer" ? "po:fixed po:right-0 po:bottom-5 po:z-[80] po:min-h-11 po:gap-1.5 po:rounded-l-2xl po:bg-zinc-900/90 po:px-4 po:text-sm po:text-zinc-100 po:shadow-md po:ring-1 po:ring-violet-400/40 po:backdrop-blur po:sm:static po:sm:z-auto po:sm:min-h-0 po:sm:rounded-none po:sm:bg-transparent po:sm:px-0 po:sm:text-xs po:sm:text-zinc-500 po:sm:shadow-none po:sm:ring-0 po:sm:backdrop-blur-none po:sm:hover:text-zinc-200"
+          : "po:relative po:z-10 po:min-h-11 po:gap-2 po:rounded-full po:bg-zinc-900/85 po:px-4 po:text-sm po:text-zinc-100 po:shadow-lg po:ring-1 po:ring-white/15 po:backdrop-blur po:hover:bg-zinc-800"
       )}>
-      {capturing ? <Loader2 className="po:h-4 po:w-4 po:animate-spin" /> : <MessageSquarePlus className={cn("po:h-4 po:w-4", triggerVariant === "footer" && "po:sm:h-3.5 po:sm:w-3.5")} />}
+      {capturing ? <Loader2 className="po:h-4 po:w-4 po:animate-spin" />
+        : triggerVariant === "floating" ? <span aria-hidden="true" className="po:relative po:grid po:h-6 po:w-6 po:place-items-center po:rounded-full po:bg-gradient-to-br po:from-violet-500 po:to-fuchsia-600"><MessageSquarePlus className="po:h-3.5 po:w-3.5 po:text-white" /></span>
+        : <MessageSquarePlus className={cn("po:h-4 po:w-4", triggerVariant === "footer" && "po:sm:h-3.5 po:sm:w-3.5")} />}
       {triggerVariant === "footer" ? <span>Feedback</span> : triggerVariant !== "icon" ? "Feedback" : null}
     </button>
   );

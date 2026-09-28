@@ -5,6 +5,7 @@ var MAX_JSON_BYTES = 85e5;
 var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 var MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 var AUDIO_TYPES = /* @__PURE__ */ new Set(["audio/m4a", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm", "audio/x-m4a", "audio/x-wav"]);
+var MAX_SDP_BYTES = 64 * 1024;
 function json(body, status) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
@@ -233,7 +234,63 @@ function createPointOutHandlers(options) {
       } catch {
         return json({ error: "Transkription fehlgeschlagen. Bitte Text eingeben." }, 503);
       }
+    },
+    /** Every refusal is fine for the client: it then uploads the recording instead. */
+    transcribeLive: async (request) => {
+      if (!options.liveTranscribe) return json({ error: "Live-Mitschrift ist nicht eingerichtet." }, 501);
+      if (!request.headers.get("content-type")?.startsWith("application/sdp")) return json({ error: "SDP erforderlich." }, 415);
+      let allowed;
+      try {
+        allowed = await options.rateLimit(request, "transcribe");
+      } catch {
+        return json({ error: "Spracheingabe ist gerade nicht verf\xFCgbar." }, 503);
+      }
+      if (!allowed) return json({ error: "Bitte warte kurz." }, 429);
+      const offer = await readLimited(request, MAX_SDP_BYTES);
+      if (offer === null) return json({ error: "Anfrage ist zu gro\xDF." }, 413);
+      if (!offer.startsWith("v=0\r\n")) return json({ error: "Ung\xFCltige Anfrage." }, 400);
+      try {
+        const answer = await options.liveTranscribe(offer, AbortSignal.any([request.signal, AbortSignal.timeout(9e3)]));
+        return answer ? new Response(answer, { headers: { "Content-Type": "application/sdp", "Cache-Control": "no-store" } }) : json({ error: "Live-Mitschrift ist gerade nicht verf\xFCgbar." }, 503);
+      } catch {
+        return json({ error: "Live-Mitschrift ist gerade nicht verf\xFCgbar." }, 503);
+      }
     }
+  };
+}
+function createOpenAILiveTranscriber(apiKey, { model = "gpt-live-transcribe", language = "de", maxSeconds = 80 } = {}) {
+  if (!apiKey) throw new Error("OPENAI_API_KEY is required on the server.");
+  return async (offerSdp, signal) => {
+    const form = new FormData();
+    form.set("sdp", offerSdp);
+    form.set("session", JSON.stringify({
+      type: "transcription",
+      audio: { input: {
+        transcription: { model, languages: [language], delay: "low" },
+        noise_reduction: { type: "near_field" },
+        turn_detection: null
+      } }
+    }));
+    const response = await fetch("https://api.openai.com/v1/realtime/calls", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal
+    });
+    if (!response.ok) return null;
+    const callId = response.headers.get("location")?.match(/\/calls\/(rtc_[\w-]+)$/)?.[1];
+    if (callId) {
+      const hangup = setTimeout(() => {
+        void fetch(`https://api.openai.com/v1/realtime/calls/${callId}/hangup`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(5e3)
+        }).catch(() => {
+        });
+      }, maxSeconds * 1e3);
+      hangup.unref?.();
+    }
+    return response.text();
   };
 }
 function createOpenAITranscriber(apiKey, model = "gpt-4o-mini-transcribe") {
@@ -276,6 +333,7 @@ function createSupabaseRateLimiter(client, options) {
   };
 }
 export {
+  createOpenAILiveTranscriber,
   createOpenAITranscriber,
   createPointOutHandlers,
   createSupabaseRateLimiter,

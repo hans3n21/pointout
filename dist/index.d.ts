@@ -8,6 +8,8 @@ type PointOutWidgetProps = {
     appVersion?: string | null;
     feedbackUrl?: string;
     transcribeUrl?: string;
+    /** Live dictation (words appear while speaking). The host relays the WebRTC offer; see `transcribeLive`. `null` switches it off; without the route the recording is uploaded. */
+    liveTranscribeUrl?: string | null;
     sessionId?: string;
     targetType?: "page" | "chat_message" | "chat_session" | "design" | "generation";
     targetRef?: string;
@@ -15,7 +17,7 @@ type PointOutWidgetProps = {
     /** Read when the dialog opens (max. 1 s); errors are ignored. */
     context?: () => PointOutAppContext | Promise<PointOutAppContext>;
 };
-declare function PointOutWidget({ projectId, projectName, appVersion, feedbackUrl, transcribeUrl, sessionId, targetType, targetRef, triggerVariant, context, }: PointOutWidgetProps): react.JSX.Element;
+declare function PointOutWidget({ projectId, projectName, appVersion, feedbackUrl, transcribeUrl, liveTranscribeUrl, sessionId, targetType, targetRef, triggerVariant, context, }: PointOutWidgetProps): react.JSX.Element;
 
 type PointOutStepKind = "click" | "error" | "request";
 type SentStep = {

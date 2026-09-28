@@ -71,11 +71,26 @@ type PointOutServerOptions = {
     /** Use the host app's persistent rate limiter. Return false when the request exceeds its limit. */
     rateLimit: (request: Request, operation: "feedback" | "transcribe") => Promise<boolean> | boolean;
     transcribe: (audio: File) => Promise<string>;
+    /** Optional live dictation: relays the browser's WebRTC offer, returns the answer SDP or null. See `createOpenAILiveTranscriber`. */
+    liveTranscribe?: (offerSdp: string, signal: AbortSignal) => Promise<string | null>;
 };
 declare function createPointOutHandlers(options: PointOutServerOptions): {
     feedback: (request: Request) => Promise<Response>;
     transcribe: (request: Request) => Promise<Response>;
+    /** Every refusal is fine for the client: it then uploads the recording instead. */
+    transcribeLive: (request: Request) => Promise<Response>;
 };
+/**
+ * Live dictation over OpenAI's Realtime API (WebRTC). The browser talks to
+ * OpenAI directly after this signaling step; the key stays on the server. The
+ * call ends when the browser disconnects; as a safeguard it is also hung up
+ * after `maxSeconds` (best effort: a serverless function may be frozen before).
+ */
+declare function createOpenAILiveTranscriber(apiKey: string, { model, language, maxSeconds }?: {
+    model?: string | undefined;
+    language?: string | undefined;
+    maxSeconds?: number | undefined;
+}): (offerSdp: string, signal: AbortSignal) => Promise<string | null>;
 declare function createOpenAITranscriber(apiKey: string, model?: string): (audio: File) => Promise<string>;
 declare function createSupabaseStore(client: SupabaseClient, bucket?: string): PointOutStore;
 /** Persistent per-project limiter. identify must use a trusted server-side user/session or proxy identity. */
@@ -87,4 +102,4 @@ declare function createSupabaseRateLimiter(client: SupabaseClient, options: {
     transcriptionsPerHour?: number;
 }): PointOutServerOptions["rateLimit"];
 
-export { type PointOutServerOptions, type PointOutStore, createOpenAITranscriber, createPointOutHandlers, createSupabaseRateLimiter, createSupabaseStore };
+export { type PointOutServerOptions, type PointOutStore, createOpenAILiveTranscriber, createOpenAITranscriber, createPointOutHandlers, createSupabaseRateLimiter, createSupabaseStore };

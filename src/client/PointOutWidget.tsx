@@ -50,6 +50,8 @@ export type PointOutWidgetProps = {
   appVersion?: string | null;
   feedbackUrl?: string;
   transcribeUrl?: string;
+  /** Live dictation (words appear while speaking). The host relays the WebRTC offer; see `transcribeLive`. `null` switches it off; without the route the recording is uploaded. */
+  liveTranscribeUrl?: string | null;
   sessionId?: string;
   targetType?: "page" | "chat_message" | "chat_session" | "design" | "generation";
   targetRef?: string;
@@ -66,6 +68,7 @@ export function PointOutWidget({
   appVersion = null,
   feedbackUrl = "/api/pointout/feedback",
   transcribeUrl = "/api/pointout/transcribe",
+  liveTranscribeUrl = "/api/pointout/transcribe/live",
   sessionId,
   targetType = "page",
   targetRef,
@@ -108,17 +111,17 @@ export function PointOutWidget({
   const dictation = useDictation((text) => {
     setTranscriptOriginal((current) => current ? current + "\n" + text : text);
     setNote((current) => current.trim() ? current.trimEnd() + " " + text : text);
-  }, transcribeUrl);
+  }, transcribeUrl, liveTranscribeUrl);
   const { phase: dictationPhase, stop: stopDictation } = dictation;
 
   useEffect(() => {
     captureRun.current += 1;
   }, [pagePath]);
   useEffect(() => {
-    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl] });
+    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl, ...(liveTranscribeUrl ? [liveTranscribeUrl] : [])] });
     recorderRef.current = recorder;
     return () => { recorder.stop(); recorderRef.current = null; };
-  }, [feedbackUrl, transcribeUrl]);
+  }, [feedbackUrl, transcribeUrl, liveTranscribeUrl]);
   useEffect(() => {
     if (!open && dictationPhase === "recording") stopDictation();
   }, [open, dictationPhase, stopDictation]);
@@ -385,14 +388,18 @@ export function PointOutWidget({
                 <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Was ist passiert?" rows={2} maxLength={4000}
                   aria-label="Feedback-Text" className="po:min-h-16 po:flex-1 po:resize-none po:rounded-2xl po:bg-white/[0.05] po:text-base po:text-zinc-100 po:outline-none po:placeholder:text-zinc-500 po:focus:border-violet-400/70" />
                 <button type="button" onClick={() => dictation.phase === "recording" ? dictation.stop() : void dictation.start()}
-                  disabled={dictation.phase === "transcribing"} aria-label={dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : "Einsprechen"}
+                  disabled={dictation.phase === "transcribing" || dictation.phase === "starting"} aria-label={dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : dictation.phase === "starting" ? "Mikrofon wird vorbereitet" : "Einsprechen"}
                   className={cn(press, "po:relative po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-2xl po:text-white po:shadow-lg po:disabled:opacity-60",
                     dictation.phase === "recording" ? "po:bg-rose-500 po:shadow-rose-900/50" : "po:bg-gradient-to-br po:from-violet-500 po:to-fuchsia-600 po:shadow-violet-900/50")}>
                   {dictation.phase === "recording" ? <span aria-hidden="true" className="po:absolute po:inset-0 po:animate-ping po:rounded-2xl po:bg-rose-400/40" /> : null}
-                  {dictation.phase === "recording" ? <Square className="po:relative po:h-6 po:w-6 po:fill-current" /> : dictation.phase === "transcribing" ? <Loader2 className="po:h-6 po:w-6 po:animate-spin" /> : <Mic className="po:h-7 po:w-7" />}
+                  {dictation.phase === "recording" ? <Square className="po:relative po:h-6 po:w-6 po:fill-current" /> : dictation.phase === "transcribing" || dictation.phase === "starting" ? <Loader2 className="po:h-6 po:w-6 po:animate-spin" /> : <Mic className="po:h-7 po:w-7" />}
                 </button>
               </div>
-              {dictation.phase !== "idle" ? <p role="status" className="po:mt-2 po:text-xs po:text-zinc-300">{dictation.phase === "recording" ? "Aufnahme läuft · Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt …"}</p> : null}
+              {dictation.phase !== "idle" ? <p role="status" className="po:mt-2 po:text-xs po:text-zinc-300">
+                {dictation.phase === "starting" ? "Mikrofon wird vorbereitet …"
+                  : dictation.liveText ? <>„{dictation.liveText}“{dictation.phase === "recording" ? " · zum Beenden tippen" : " …"}</>
+                  : dictation.phase === "recording" ? "Aufnahme läuft · Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt …"}
+              </p> : null}
               {dictation.error ? <p role="alert" className="po:mt-2 po:text-sm po:text-amber-200">{dictation.error}</p> : null}
               {error ? <p role="alert" className="po:mt-2 po:text-sm po:text-rose-300">{error}</p> : null}
               <button type="button" onClick={() => void saveNote()} disabled={!note.trim() || saving || capturing || dictation.phase !== "idle"}

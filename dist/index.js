@@ -43,6 +43,112 @@ function cn(...parts) {
 // src/client/useDictation.ts
 import { useCallback, useEffect as useEffect2, useRef, useState } from "react";
 
+// src/core/liveTranscription.ts
+function startLiveTranscription(stream, onText, url) {
+  const peer = new RTCPeerConnection();
+  const channel = peer.createDataChannel("transcription");
+  const abort = new AbortController();
+  let closed = false;
+  let finishing = false;
+  let finalText = null;
+  let partial = "";
+  let commitTimer;
+  let finishTimer;
+  let resolveFinish;
+  let finishPromise;
+  let resolveOpen;
+  const opened = new Promise((resolve) => {
+    resolveOpen = resolve;
+  });
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(commitTimer);
+    clearTimeout(finishTimer);
+    clearTimeout(setupTimer);
+    abort.abort();
+    channel.onmessage = null;
+    channel.onclose = null;
+    peer.onconnectionstatechange = null;
+    channel.close();
+    peer.close();
+    resolveOpen?.(false);
+    resolveFinish?.(finalText);
+  };
+  const setupTimer = setTimeout(close, 1e4);
+  channel.onopen = () => resolveOpen?.(true);
+  channel.onclose = close;
+  peer.onconnectionstatechange = () => {
+    if (peer.connectionState === "failed" || peer.connectionState === "closed") close();
+  };
+  channel.onmessage = (message) => {
+    if (closed) return;
+    let event;
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    if (event.type === "error" || event.type === "conversation.item.input_audio_transcription.failed") {
+      close();
+    } else if (event.type === "conversation.item.input_audio_transcription.delta" && typeof event.delta === "string") {
+      partial += event.delta;
+      onText(partial);
+    } else if (event.type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
+      finalText = event.transcript.trim();
+      onText(finalText);
+      if (finishing) close();
+    }
+  };
+  const ready = (async () => {
+    try {
+      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      const offer = await peer.createOffer();
+      if (closed) return false;
+      await peer.setLocalDescription(offer);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: offer.sdp,
+        signal: abort.signal
+      });
+      if (!response.ok) throw new Error("Live transcription unavailable");
+      const sdp = await response.text();
+      if (closed) return false;
+      await peer.setRemoteDescription({ type: "answer", sdp });
+      const connected = channel.readyState === "open" || await opened;
+      if (connected && !closed) clearTimeout(setupTimer);
+      return connected && !closed;
+    } catch {
+      close();
+      return false;
+    }
+  })();
+  return {
+    ready,
+    cancel: close,
+    finish() {
+      if (finishPromise) return finishPromise;
+      if (closed) return Promise.resolve(null);
+      finishing = true;
+      finishPromise = new Promise((resolve) => {
+        resolveFinish = resolve;
+      });
+      commitTimer = setTimeout(() => {
+        if (closed) return;
+        if (channel.readyState !== "open") {
+          close();
+          return;
+        }
+        channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+      }, 300);
+      finishTimer = setTimeout(close, 12e3);
+      if (finalText !== null) close();
+      return finishPromise;
+    }
+  };
+}
+
 // src/core/recording.ts
 var VOICE_MIME_TYPES = [
   "audio/webm;codecs=opus",
@@ -73,11 +179,13 @@ function getVoiceErrorMessage(error) {
 
 // src/client/useDictation.ts
 var TRANSCRIPTION_FAILED = "Die Aufnahme konnte nicht in Text umgewandelt werden. Bitte versuche es erneut.";
-function useDictation(onText, transcribeUrl) {
+function useDictation(onText, transcribeUrl, liveTranscribeUrl) {
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
+  const [liveText, setLiveText] = useState("");
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
+  const liveRef = useRef(null);
   const onTextRef = useRef(onText);
   useEffect2(() => {
     onTextRef.current = onText;
@@ -92,6 +200,8 @@ function useDictation(onText, transcribeUrl) {
       recorder.onstop = null;
       if (recorder.state !== "inactive") recorder.stop();
     }
+    liveRef.current?.cancel();
+    liveRef.current = null;
     release();
   }, [release]);
   const transcribe = async (audio) => {
@@ -116,6 +226,7 @@ function useDictation(onText, transcribeUrl) {
       setError("Spracheingabe wird von diesem Browser nicht unterst\xFCtzt. Nutze alternativ die Diktierfunktion deiner Handy-Tastatur.");
       return;
     }
+    setPhase("starting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true }
@@ -127,10 +238,21 @@ function useDictation(onText, transcribeUrl) {
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunks.push(event.data);
       };
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
+        const live = liveRef.current;
+        liveRef.current = null;
+        const liveResult = live?.finish();
         release();
         recorderRef.current = null;
         const audio = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
+        setPhase("transcribing");
+        const text = await liveResult;
+        setLiveText("");
+        if (text) {
+          onTextRef.current(text);
+          setPhase("idle");
+          return;
+        }
         if (audio.size === 0) {
           setPhase("idle");
           setError("Ich habe keine Aufnahme erhalten. Bitte versuche es erneut.");
@@ -139,15 +261,34 @@ function useDictation(onText, transcribeUrl) {
         void transcribe(audio);
       };
       recorder.onerror = () => {
+        liveRef.current?.cancel();
+        liveRef.current = null;
+        setLiveText("");
         release();
         recorderRef.current = null;
         setPhase("idle");
         setError("Die Aufnahme ist abgebrochen. Bitte versuche es erneut.");
       };
       recorderRef.current = recorder;
+      if (liveTranscribeUrl && typeof RTCPeerConnection !== "undefined") {
+        try {
+          setLiveText("");
+          const live = startLiveTranscription(stream, setLiveText, liveTranscribeUrl);
+          liveRef.current = live;
+          if (!await live.ready) {
+            live.cancel();
+            liveRef.current = null;
+          }
+        } catch {
+          liveRef.current = null;
+        }
+      }
+      if (streamRef.current !== stream) return;
       recorder.start();
       setPhase("recording");
     } catch (cause) {
+      liveRef.current?.cancel();
+      liveRef.current = null;
       release();
       setPhase("idle");
       setError(getVoiceErrorMessage(cause));
@@ -157,7 +298,7 @@ function useDictation(onText, transcribeUrl) {
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
-  return { phase, error, start, stop };
+  return { phase, error, liveText, start, stop };
 }
 
 // src/core/annotation.ts
@@ -1079,6 +1220,7 @@ function PointOutWidget({
   appVersion = null,
   feedbackUrl = "/api/pointout/feedback",
   transcribeUrl = "/api/pointout/transcribe",
+  liveTranscribeUrl = "/api/pointout/transcribe/live",
   sessionId,
   targetType = "page",
   targetRef,
@@ -1119,19 +1261,19 @@ function PointOutWidget({
   const dictation = useDictation((text) => {
     setTranscriptOriginal((current) => current ? current + "\n" + text : text);
     setNote((current) => current.trim() ? current.trimEnd() + " " + text : text);
-  }, transcribeUrl);
+  }, transcribeUrl, liveTranscribeUrl);
   const { phase: dictationPhase, stop: stopDictation } = dictation;
   useEffect4(() => {
     captureRun.current += 1;
   }, [pagePath]);
   useEffect4(() => {
-    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl] });
+    const recorder = startStepRecorder({ ignoreUrls: [feedbackUrl, transcribeUrl, ...liveTranscribeUrl ? [liveTranscribeUrl] : []] });
     recorderRef.current = recorder;
     return () => {
       recorder.stop();
       recorderRef.current = null;
     };
-  }, [feedbackUrl, transcribeUrl]);
+  }, [feedbackUrl, transcribeUrl, liveTranscribeUrl]);
   useEffect4(() => {
     if (!open && dictationPhase === "recording") stopDictation();
   }, [open, dictationPhase, stopDictation]);
@@ -1447,8 +1589,8 @@ function PointOutWidget({
                     {
                       type: "button",
                       onClick: () => dictation.phase === "recording" ? dictation.stop() : void dictation.start(),
-                      disabled: dictation.phase === "transcribing",
-                      "aria-label": dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : "Einsprechen",
+                      disabled: dictation.phase === "transcribing" || dictation.phase === "starting",
+                      "aria-label": dictation.phase === "recording" ? "Aufnahme beenden" : dictation.phase === "transcribing" ? "Aufnahme wird umgewandelt" : dictation.phase === "starting" ? "Mikrofon wird vorbereitet" : "Einsprechen",
                       className: cn(
                         press,
                         "po:relative po:grid po:h-16 po:w-16 po:shrink-0 po:place-items-center po:rounded-2xl po:text-white po:shadow-lg po:disabled:opacity-60",
@@ -1456,12 +1598,17 @@ function PointOutWidget({
                       ),
                       children: [
                         dictation.phase === "recording" ? /* @__PURE__ */ jsx2("span", { "aria-hidden": "true", className: "po:absolute po:inset-0 po:animate-ping po:rounded-2xl po:bg-rose-400/40" }) : null,
-                        dictation.phase === "recording" ? /* @__PURE__ */ jsx2(Square, { className: "po:relative po:h-6 po:w-6 po:fill-current" }) : dictation.phase === "transcribing" ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-6 po:w-6 po:animate-spin" }) : /* @__PURE__ */ jsx2(Mic, { className: "po:h-7 po:w-7" })
+                        dictation.phase === "recording" ? /* @__PURE__ */ jsx2(Square, { className: "po:relative po:h-6 po:w-6 po:fill-current" }) : dictation.phase === "transcribing" || dictation.phase === "starting" ? /* @__PURE__ */ jsx2(Loader2, { className: "po:h-6 po:w-6 po:animate-spin" }) : /* @__PURE__ */ jsx2(Mic, { className: "po:h-7 po:w-7" })
                       ]
                     }
                   )
                 ] }),
-                dictation.phase !== "idle" ? /* @__PURE__ */ jsx2("p", { role: "status", className: "po:mt-2 po:text-xs po:text-zinc-300", children: dictation.phase === "recording" ? "Aufnahme l\xE4uft \xB7 Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt \u2026" }) : null,
+                dictation.phase !== "idle" ? /* @__PURE__ */ jsx2("p", { role: "status", className: "po:mt-2 po:text-xs po:text-zinc-300", children: dictation.phase === "starting" ? "Mikrofon wird vorbereitet \u2026" : dictation.liveText ? /* @__PURE__ */ jsxs2(Fragment, { children: [
+                  "\u201E",
+                  dictation.liveText,
+                  "\u201C",
+                  dictation.phase === "recording" ? " \xB7 zum Beenden tippen" : " \u2026"
+                ] }) : dictation.phase === "recording" ? "Aufnahme l\xE4uft \xB7 Mikrofon zum Beenden tippen" : "Sprache wird in Text umgewandelt \u2026" }) : null,
                 dictation.error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-amber-200", children: dictation.error }) : null,
                 error ? /* @__PURE__ */ jsx2("p", { role: "alert", className: "po:mt-2 po:text-sm po:text-rose-300", children: error }) : null,
                 /* @__PURE__ */ jsx2(

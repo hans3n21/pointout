@@ -1,19 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { startLiveTranscription, type LiveTranscription } from "../core/liveTranscription";
 import { audioFileExtension, getVoiceErrorMessage, selectVoiceMimeType } from "../core/recording";
 
-export type DictationPhase = "idle" | "recording" | "transcribing";
+export type DictationPhase = "idle" | "starting" | "recording" | "transcribing";
 
 const TRANSCRIPTION_FAILED = "Die Aufnahme konnte nicht in Text umgewandelt werden. Bitte versuche es erneut.";
 
-/** Schlichtes Diktat: aufnehmen, beim Beenden umwandeln, Text zurückgeben. Für Felder
- * ohne Live-Mitschrift wie das Feedback; das Eingabefeld der Bühne hat seine eigene. */
-export function useDictation(onText: (text: string) => void, transcribeUrl: string) {
+/**
+ * Dictation for the feedback text. With a live route (`liveTranscribeUrl`) the
+ * words appear while speaking (`liveText`) and the final text is there right
+ * after stopping. Without one, or when it fails, the recording is uploaded to
+ * `transcribeUrl` as before.
+ */
+export function useDictation(onText: (text: string) => void, transcribeUrl: string, liveTranscribeUrl?: string | null) {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [error, setError] = useState("");
+  const [liveText, setLiveText] = useState("");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const liveRef = useRef<LiveTranscription | null>(null);
   const onTextRef = useRef(onText);
   useEffect(() => { onTextRef.current = onText; }, [onText]);
 
@@ -29,6 +36,8 @@ export function useDictation(onText: (text: string) => void, transcribeUrl: stri
       recorder.onstop = null;
       if (recorder.state !== "inactive") recorder.stop();
     }
+    liveRef.current?.cancel();
+    liveRef.current = null;
     release();
   }, [release]);
 
@@ -55,6 +64,7 @@ export function useDictation(onText: (text: string) => void, transcribeUrl: stri
       setError("Spracheingabe wird von diesem Browser nicht unterstützt. Nutze alternativ die Diktierfunktion deiner Handy-Tastatur.");
       return;
     }
+    setPhase("starting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true },
@@ -64,10 +74,21 @@ export function useDictation(onText: (text: string) => void, transcribeUrl: stri
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: 64_000 } : undefined);
       const chunks: Blob[] = [];
       recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
+        const live = liveRef.current;
+        liveRef.current = null;
+        const liveResult = live?.finish();
         release();
         recorderRef.current = null;
         const audio = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
+        setPhase("transcribing");
+        const text = await liveResult;
+        setLiveText("");
+        if (text) {
+          onTextRef.current(text);
+          setPhase("idle");
+          return;
+        }
         if (audio.size === 0) {
           setPhase("idle");
           setError("Ich habe keine Aufnahme erhalten. Bitte versuche es erneut.");
@@ -76,15 +97,33 @@ export function useDictation(onText: (text: string) => void, transcribeUrl: stri
         void transcribe(audio);
       };
       recorder.onerror = () => {
+        liveRef.current?.cancel();
+        liveRef.current = null;
+        setLiveText("");
         release();
         recorderRef.current = null;
         setPhase("idle");
         setError("Die Aufnahme ist abgebrochen. Bitte versuche es erneut.");
       };
       recorderRef.current = recorder;
+      // The live connection must be open before speaking, or it would miss the
+      // first words; when it fails the recording is uploaded instead.
+      if (liveTranscribeUrl && typeof RTCPeerConnection !== "undefined") {
+        try {
+          setLiveText("");
+          const live = startLiveTranscription(stream, setLiveText, liveTranscribeUrl);
+          liveRef.current = live;
+          if (!(await live.ready)) { live.cancel(); liveRef.current = null; }
+        } catch {
+          liveRef.current = null;
+        }
+      }
+      if (streamRef.current !== stream) return;
       recorder.start();
       setPhase("recording");
     } catch (cause) {
+      liveRef.current?.cancel();
+      liveRef.current = null;
       release();
       setPhase("idle");
       setError(getVoiceErrorMessage(cause));
@@ -96,5 +135,5 @@ export function useDictation(onText: (text: string) => void, transcribeUrl: stri
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
 
-  return { phase, error, start, stop };
+  return { phase, error, liveText, start, stop };
 }

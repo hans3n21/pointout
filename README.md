@@ -2,19 +2,19 @@
 
 PointOut ist ein kleines Feedback-Widget für React-Web-Apps: Screenshot des aktuellen Bildschirms, Markierungen per Maus oder Finger, Sprache-zu-Text oder Text und Absenden. Der Server-Adapter läuft im vorhandenen Backend der App. OpenAI- und Supabase-Schlüssel bleiben dort.
 
-**Stand v0.4:** React-Client und frameworkunabhängige `Request`/`Response`-Handler, mit Beispiel für Next.js App Router und Supabase. Andere Frameworks können dieselben Handler in ihre Routen einhängen. Für rein statische Seiten ist ein Backend erforderlich. WirdEcht verwendet vorerst weiterhin seine integrierte PointOut-Fassung. Neu in v0.4: für Touch gebaut (große Tippflächen, Bottom-Sheet, 16-px-Textfeld ohne Handy-Zoom), frischere Optik, das Fenster öffnet sofort und der Screenshot kommt darin nach; Bilder aus `::before`/`::after`-Hintergründen erscheinen im Screenshot, und große Bilder werden in Bildschirmgröße eingebettet (schneller auf Handy und Tablet). Neu in v0.3: Der Screenshot zeigt, was wirklich zu sehen ist (siehe „Screenshot-Treue“). Neu in v0.2: letzte Bedienschritte, Format-Angaben, Kategorie und App-Zustand für die Auswertung (siehe „Was mitgesendet wird“); keine Datenbank-Migration nötig.
+**Stand v0.4.1:** React-Client und frameworkunabhängige `Request`/`Response`-Handler, mit Beispiel für Next.js App Router und Supabase. Andere Frameworks können dieselben Handler in ihre Routen einhängen. Für rein statische Seiten ist ein Backend erforderlich. WirdEcht verwendet vorerst weiterhin seine integrierte PointOut-Fassung. Neu in v0.4.1: Live-Mitschrift beim Einsprechen – die Worte erscheinen schon beim Sprechen, nach dem Stoppen ist der Text sofort da (optionale dritte Route, siehe unten; ohne sie wird wie bisher hochgeladen). Neu in v0.4: für Touch gebaut (große Tippflächen, Bottom-Sheet, 16-px-Textfeld ohne Handy-Zoom), frischere Optik, das Fenster öffnet sofort und der Screenshot kommt darin nach; Bilder aus `::before`/`::after`-Hintergründen erscheinen im Screenshot, und große Bilder werden in Bildschirmgröße eingebettet (schneller auf Handy und Tablet). Neu in v0.3: Der Screenshot zeigt, was wirklich zu sehen ist (siehe „Screenshot-Treue“). Neu in v0.2: letzte Bedienschritte, Format-Angaben, Kategorie und App-Zustand für die Auswertung (siehe „Was mitgesendet wird“); keine Datenbank-Migration nötig.
 
 ## Installation aus GitHub
 
 ```sh
-npm install https://github.com/hans3n21/pointout/archive/refs/tags/v0.4.0.tar.gz
+npm install https://github.com/hans3n21/pointout/archive/refs/tags/v0.4.1.tar.gz
 ```
 
-Das Tag-Archiv enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig, und es braucht keinen SSH-Schlüssel. Nicht `git+https://…#v0.4.0` verwenden: npm baut Git-Abhängigkeiten mit `build`-Skript vor dem Einbau selbst, und das scheitert. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag beibehalten, bis ein neuer Tag veröffentlicht wird.
+Das Tag-Archiv enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig, und es braucht keinen SSH-Schlüssel. Nicht `git+https://…#v0.4.1` verwenden: npm baut Git-Abhängigkeiten mit `build`-Skript vor dem Einbau selbst, und das scheitert. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag beibehalten, bis ein neuer Tag veröffentlicht wird.
 
 ### Prompt für Codex oder Claude
 
-> Integriere PointOut v0.4.0 aus `https://github.com/hans3n21/pointout` in diese React-Web-App. Lies die README. Nutze den bestehenden App-Server und, falls vorhanden, die vorhandene OpenAI- und Supabase-Infrastruktur. Installiere das Paket aus dem GitHub-Release, binde Widget und CSS ein, richte die zwei serverseitigen Routen und die SQL-Installation ein, konfiguriere `projectId`, `projectName` und `appVersion`, und prüfe Screenshot, Markieren, Mikrofon, Text und fehlgeschlagenes Senden. Halte alle Schlüssel auf dem Server.
+> Integriere PointOut v0.4.1 aus `https://github.com/hans3n21/pointout` in diese React-Web-App. Lies die README. Nutze den bestehenden App-Server und, falls vorhanden, die vorhandene OpenAI- und Supabase-Infrastruktur. Installiere das Paket aus dem GitHub-Release, binde Widget und CSS ein, richte die drei serverseitigen Routen (Feedback, Umwandlung, Live-Mitschrift) und die SQL-Installation ein, konfiguriere `projectId`, `projectName` und `appVersion`, und prüfe Screenshot, Markieren, Mikrofon, Text und fehlgeschlagenes Senden. Halte alle Schlüssel auf dem Server.
 
 ## Client
 
@@ -29,7 +29,7 @@ export function Feedback() {
 }
 ```
 
-`feedbackUrl` und `transcribeUrl` zeigen standardmäßig auf `/api/pointout/feedback` und `/api/pointout/transcribe`. Sie lassen sich als Props ändern. Das Fenster öffnet sofort; der automatische Screenshot erfasst den sichtbaren App-Bildschirm ohne das Fenster und übernimmt lesbare Canvas-Bitmaps. Senden ist möglich, sobald das Bild da ist. Beim erneuten Öffnen wird der aktuelle Bildschirm erfasst; Textentwürfe bleiben erhalten. Manuell gewählte Bilder und Entwürfe nach einem Sendefehler bleiben erhalten. Bildauswahl ist immer verfügbar. `data-pointout-private` blendet sensible App-Elemente im automatischen Bild aus. URL-Query und Hash werden nicht übertragen.
+`feedbackUrl`, `transcribeUrl` und `liveTranscribeUrl` zeigen standardmäßig auf `/api/pointout/feedback`, `/api/pointout/transcribe` und `/api/pointout/transcribe/live`. Sie lassen sich als Props ändern; `liveTranscribeUrl={null}` schaltet die Live-Mitschrift ab. Antwortet die Live-Route nicht (fehlt, Limit, Fehler), wird die Aufnahme nach dem Stoppen hochgeladen und umgewandelt. Das Fenster öffnet sofort; der automatische Screenshot erfasst den sichtbaren App-Bildschirm ohne das Fenster und übernimmt lesbare Canvas-Bitmaps. Senden ist möglich, sobald das Bild da ist. Beim erneuten Öffnen wird der aktuelle Bildschirm erfasst; Textentwürfe bleiben erhalten. Manuell gewählte Bilder und Entwürfe nach einem Sendefehler bleiben erhalten. Bildauswahl ist immer verfügbar. `data-pointout-private` blendet sensible App-Elemente im automatischen Bild aus. URL-Query und Hash werden nicht übertragen.
 
 Optional liefert die App ihren eigenen Zustand mit – das, was nur sie weiß. Die Funktion wird beim Öffnen des Dialogs ausgewertet (höchstens 1 Sekunde, Fehler werden ignoriert); Werte kurz halten und nichts Persönliches hineinschreiben:
 
@@ -60,7 +60,7 @@ Kategorie, Schritte, App-Zustand und Format stehen in der Spalte `metadata`. Fü
 ```ts
 // src/lib/pointout-server.ts — nur serverseitig importieren
 import { createClient } from "@supabase/supabase-js";
-import { createOpenAITranscriber, createPointOutHandlers, createSupabaseRateLimiter, createSupabaseStore } from "@hans3n21/pointout/server";
+import { createOpenAILiveTranscriber, createOpenAITranscriber, createPointOutHandlers, createSupabaseRateLimiter, createSupabaseStore } from "@hans3n21/pointout/server";
 
 export function pointOutHandlers() {
   const projectId = "meine-app";
@@ -80,6 +80,8 @@ export function pointOutHandlers() {
       transcriptionsPerHour: 60,
     }),
     transcribe: createOpenAITranscriber(process.env.OPENAI_API_KEY!),
+    // Optional: Live-Mitschrift über WebRTC. Der Server reicht nur das Verbindungsangebot weiter.
+    liveTranscribe: createOpenAILiveTranscriber(process.env.OPENAI_API_KEY!),
   });
 }
 ```
@@ -97,6 +99,15 @@ import { pointOutHandlers } from "@/lib/pointout-server";
 export const runtime = "nodejs";
 export async function POST(request: Request) { return pointOutHandlers().transcribe(request); }
 ```
+
+```ts
+// src/app/api/pointout/transcribe/live/route.ts (optional, Live-Mitschrift)
+import { pointOutHandlers } from "@/lib/pointout-server";
+export const runtime = "nodejs";
+export async function POST(request: Request) { return pointOutHandlers().transcribeLive(request); }
+```
+
+Die Live-Route zählt gegen dasselbe Limit wie die Umwandlung (`transcribe`). Nach dem Verbindungsaufbau spricht der Browser direkt mit OpenAI; der Schlüssel bleibt auf dem Server. Seitenrichtlinien (CSP) müssen dafür WebRTC zulassen.
 
 Die Rate-Limit-Funktion blockiert bei Datenbankfehlern. Der Dialog behält Text und Bild bei einem Sendefehler, damit der Nutzer erneut senden kann. Feedback-Zeilen sind nur dem Server zugänglich; für eine Admin-Oberfläche muss die App ihre vorhandene Admin-Authentifizierung verwenden. Screenshots liegen im privaten Bucket, `screenshot_url` enthält einen Bucket-Pfad. Für die Anzeige signierte URLs nur in einem geschützten Admin-Endpunkt erzeugen.
 

@@ -45,7 +45,11 @@ export type PointOutServerOptions = {
   /** Use the host app's persistent rate limiter. Return false when the request exceeds its limit. */
   rateLimit: (request: Request, operation: "feedback" | "transcribe") => Promise<boolean> | boolean;
   transcribe: (audio: File) => Promise<string>;
+  /** Optional live dictation: relays the browser's WebRTC offer, returns the answer SDP or null. See `createOpenAILiveTranscriber`. */
+  liveTranscribe?: (offerSdp: string, signal: AbortSignal) => Promise<string | null>;
 };
+
+const MAX_SDP_BYTES = 64 * 1024;
 
 function json(body: Record<string, string>, status: number): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -258,6 +262,60 @@ export function createPointOutHandlers(options: PointOutServerOptions) {
         return text ? Response.json({ text }, { headers: { "Cache-Control": "no-store" } }) : json({ error: "Keine Sprache erkannt." }, 422);
       } catch { return json({ error: "Transkription fehlgeschlagen. Bitte Text eingeben." }, 503); }
     },
+    /** Every refusal is fine for the client: it then uploads the recording instead. */
+    transcribeLive: async (request: Request): Promise<Response> => {
+      if (!options.liveTranscribe) return json({ error: "Live-Mitschrift ist nicht eingerichtet." }, 501);
+      if (!request.headers.get("content-type")?.startsWith("application/sdp")) return json({ error: "SDP erforderlich." }, 415);
+      let allowed: boolean;
+      try { allowed = await options.rateLimit(request, "transcribe"); }
+      catch { return json({ error: "Spracheingabe ist gerade nicht verfügbar." }, 503); }
+      if (!allowed) return json({ error: "Bitte warte kurz." }, 429);
+      const offer = await readLimited(request, MAX_SDP_BYTES);
+      if (offer === null) return json({ error: "Anfrage ist zu groß." }, 413);
+      if (!offer.startsWith("v=0\r\n")) return json({ error: "Ungültige Anfrage." }, 400);
+      try {
+        const answer = await options.liveTranscribe(offer, AbortSignal.any([request.signal, AbortSignal.timeout(9_000)]));
+        return answer
+          ? new Response(answer, { headers: { "Content-Type": "application/sdp", "Cache-Control": "no-store" } })
+          : json({ error: "Live-Mitschrift ist gerade nicht verfügbar." }, 503);
+      } catch { return json({ error: "Live-Mitschrift ist gerade nicht verfügbar." }, 503); }
+    },
+  };
+}
+
+/**
+ * Live dictation over OpenAI's Realtime API (WebRTC). The browser talks to
+ * OpenAI directly after this signaling step; the key stays on the server. The
+ * call ends when the browser disconnects; as a safeguard it is also hung up
+ * after `maxSeconds` (best effort: a serverless function may be frozen before).
+ */
+export function createOpenAILiveTranscriber(apiKey: string, { model = "gpt-live-transcribe", language = "de", maxSeconds = 80 } = {}) {
+  if (!apiKey) throw new Error("OPENAI_API_KEY is required on the server.");
+  return async (offerSdp: string, signal: AbortSignal): Promise<string | null> => {
+    const form = new FormData();
+    form.set("sdp", offerSdp);
+    form.set("session", JSON.stringify({
+      type: "transcription",
+      audio: { input: {
+        transcription: { model, languages: [language], delay: "low" },
+        noise_reduction: { type: "near_field" },
+        turn_detection: null,
+      } },
+    }));
+    const response = await fetch("https://api.openai.com/v1/realtime/calls", {
+      method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+    });
+    if (!response.ok) return null;
+    const callId = response.headers.get("location")?.match(/\/calls\/(rtc_[\w-]+)$/)?.[1];
+    if (callId) {
+      const hangup = setTimeout(() => {
+        void fetch(`https://api.openai.com/v1/realtime/calls/${callId}/hangup`, {
+          method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5_000),
+        }).catch(() => {});
+      }, maxSeconds * 1000);
+      (hangup as { unref?: () => void }).unref?.();
+    }
+    return response.text();
   };
 }
 

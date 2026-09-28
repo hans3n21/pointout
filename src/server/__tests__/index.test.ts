@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { createOpenAITranscriber, createPointOutHandlers, createSupabaseStore } from "../index";
+import { createOpenAILiveTranscriber, createOpenAITranscriber, createPointOutHandlers, createSupabaseStore } from "../index";
 
 const base = {
   project_id: "other-app",
@@ -115,6 +115,36 @@ describe("PointOut server handlers", () => {
 
   it("requires a server key for the default OpenAI adapter", () => {
     expect(() => createOpenAITranscriber("")).toThrow("OPENAI_API_KEY");
+    expect(() => createOpenAILiveTranscriber("")).toThrow("OPENAI_API_KEY");
+  });
+
+  it("relays a live dictation offer and answers with the provider's SDP", async () => {
+    const liveTranscribe = vi.fn().mockResolvedValue("v=0\r\no=answer");
+    const rateLimit = vi.fn().mockResolvedValue(true);
+    const handlers = createPointOutHandlers({ projectId: "other-app", store: { save: vi.fn() }, rateLimit, transcribe: async () => "", liveTranscribe });
+    const response = await handlers.transcribeLive(new Request("https://example.com/api/pointout/transcribe/live", {
+      method: "POST", headers: { "content-type": "application/sdp" }, body: "v=0\r\no=offer",
+    }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/sdp");
+    expect(await response.text()).toBe("v=0\r\no=answer");
+    expect(liveTranscribe).toHaveBeenCalledWith("v=0\r\no=offer", expect.any(AbortSignal));
+    expect(rateLimit).toHaveBeenCalledWith(expect.any(Request), "transcribe");
+  });
+
+  it("refuses live dictation without configuration, limit or a real offer, so the client uploads instead", async () => {
+    const offer = () => new Request("https://example.com/live", { method: "POST", headers: { "content-type": "application/sdp" }, body: "v=0\r\no=offer" });
+    const base = { projectId: "other-app", store: { save: vi.fn() }, transcribe: async () => "" };
+    expect((await createPointOutHandlers({ ...base, rateLimit: () => true }).transcribeLive(offer())).status).toBe(501);
+    const liveTranscribe = vi.fn().mockResolvedValue("v=0\r\no=answer");
+    expect((await createPointOutHandlers({ ...base, rateLimit: () => false, liveTranscribe }).transcribeLive(offer())).status).toBe(429);
+    const handlers = createPointOutHandlers({ ...base, rateLimit: () => true, liveTranscribe });
+    expect((await handlers.transcribeLive(new Request("https://example.com/live", { method: "POST", headers: { "content-type": "application/sdp" }, body: "kein sdp" }))).status).toBe(400);
+    expect((await handlers.transcribeLive(new Request("https://example.com/live", { method: "POST", headers: { "content-type": "text/plain" }, body: "v=0\r\n" }))).status).toBe(415);
+    expect((await handlers.transcribeLive(new Request("https://example.com/live", { method: "POST", headers: { "content-type": "application/sdp", "content-length": "999999" }, body: "v=0\r\n" }))).status).toBe(413);
+    expect(liveTranscribe).not.toHaveBeenCalled();
+    const failing = createPointOutHandlers({ ...base, rateLimit: () => true, liveTranscribe: vi.fn().mockResolvedValue(null) });
+    expect((await failing.transcribeLive(offer())).status).toBe(503);
   });
 });
 

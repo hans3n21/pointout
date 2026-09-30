@@ -2,19 +2,19 @@
 
 PointOut ist ein kleines Feedback-Widget für React-Web-Apps: Screenshot des aktuellen Bildschirms, Markierungen per Maus oder Finger, Sprache-zu-Text oder Text und Absenden. Der Server-Adapter läuft im vorhandenen Backend der App. OpenAI- und Supabase-Schlüssel bleiben dort.
 
-**Stand v0.4.1:** React-Client und frameworkunabhängige `Request`/`Response`-Handler, mit Beispiel für Next.js App Router und Supabase. Andere Frameworks können dieselben Handler in ihre Routen einhängen. Für rein statische Seiten ist ein Backend erforderlich. WirdEcht verwendet vorerst weiterhin seine integrierte PointOut-Fassung. Neu in v0.4.1: Live-Mitschrift beim Einsprechen – die Worte erscheinen schon beim Sprechen, nach dem Stoppen ist der Text sofort da (optionale dritte Route, siehe unten; ohne sie wird wie bisher hochgeladen). Neu in v0.4: für Touch gebaut (große Tippflächen, Bottom-Sheet, 16-px-Textfeld ohne Handy-Zoom), frischere Optik, das Fenster öffnet sofort und der Screenshot kommt darin nach; Bilder aus `::before`/`::after`-Hintergründen erscheinen im Screenshot, und große Bilder werden in Bildschirmgröße eingebettet (schneller auf Handy und Tablet). Neu in v0.3: Der Screenshot zeigt, was wirklich zu sehen ist (siehe „Screenshot-Treue“). Neu in v0.2: letzte Bedienschritte, Format-Angaben, Kategorie und App-Zustand für die Auswertung (siehe „Was mitgesendet wird“); keine Datenbank-Migration nötig.
+**Stand v0.5.0:** React-Client und frameworkunabhängige `Request`/`Response`-Handler, mit Beispiel für Next.js App Router und Supabase. Andere Frameworks können dieselben Handler in ihre Routen einhängen. Für rein statische Seiten ist ein Backend erforderlich. WirdEcht verwendet vorerst weiterhin seine integrierte PointOut-Fassung. Neu in v0.5: Mausrad zoomt den Screenshot an der Stelle unter dem Zeiger (100–400 %, ebenso der Trackpad-Zoom), mittlere Maustaste verschiebt; am Handy zoomen und verschieben zwei Finger, ein Finger zeichnet. Bilder werden pro Besuch nur einmal für den Screenshot aufbereitet (schnellere Folgeaufnahmen), und der Platzhalter beim Aufnehmen hat schon die Form des Bildschirms, damit das Fenster nicht springt. Neu in v0.4.1: Live-Mitschrift beim Einsprechen – die Worte erscheinen schon beim Sprechen, nach dem Stoppen ist der Text sofort da (optionale dritte Route, siehe unten; ohne sie wird wie bisher hochgeladen). Neu in v0.4: für Touch gebaut (große Tippflächen, Bottom-Sheet, 16-px-Textfeld ohne Handy-Zoom), frischere Optik, das Fenster öffnet sofort und der Screenshot kommt darin nach; Bilder aus `::before`/`::after`-Hintergründen erscheinen im Screenshot, und große Bilder werden in Bildschirmgröße eingebettet (schneller auf Handy und Tablet). Neu in v0.3: Der Screenshot zeigt, was wirklich zu sehen ist (siehe „Screenshot-Treue“). Neu in v0.2: letzte Bedienschritte, Format-Angaben, Kategorie und App-Zustand für die Auswertung (siehe „Was mitgesendet wird“); keine Datenbank-Migration nötig.
 
 ## Installation aus GitHub
 
 ```sh
-npm install https://github.com/hans3n21/pointout/archive/refs/tags/v0.4.1.tar.gz
+npm install https://github.com/hans3n21/pointout/archive/refs/tags/v0.5.0.tar.gz
 ```
 
-Das Tag-Archiv enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig, und es braucht keinen SSH-Schlüssel. Nicht `git+https://…#v0.4.1` verwenden: npm baut Git-Abhängigkeiten mit `build`-Skript vor dem Einbau selbst, und das scheitert. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag beibehalten, bis ein neuer Tag veröffentlicht wird.
+Das Tag-Archiv enthält bereits die gebauten Dateien in `dist/`; beim Installieren ist kein Build-Schritt nötig, und es braucht keinen SSH-Schlüssel. Nicht `git+https://…#v0.5.0` verwenden: npm baut Git-Abhängigkeiten mit `build`-Skript vor dem Einbau selbst, und das scheitert. Node.js 22 oder neuer ist für den Server-Adapter erforderlich. Den festen Tag beibehalten, bis ein neuer Tag veröffentlicht wird.
 
 ### Prompt für Codex oder Claude
 
-> Integriere PointOut v0.4.1 aus `https://github.com/hans3n21/pointout` in diese React-Web-App. Lies die README. Nutze den bestehenden App-Server und, falls vorhanden, die vorhandene OpenAI- und Supabase-Infrastruktur. Installiere das Paket aus dem GitHub-Release, binde Widget und CSS ein, richte die drei serverseitigen Routen (Feedback, Umwandlung, Live-Mitschrift) und die SQL-Installation ein, konfiguriere `projectId`, `projectName` und `appVersion`, und prüfe Screenshot, Markieren, Mikrofon, Text und fehlgeschlagenes Senden. Halte alle Schlüssel auf dem Server.
+> Integriere PointOut v0.5.0 aus `https://github.com/hans3n21/pointout` in diese React-Web-App. Lies die README. Nutze den bestehenden App-Server und, falls vorhanden, die vorhandene OpenAI- und Supabase-Infrastruktur. Installiere das Paket aus dem GitHub-Release, binde Widget und CSS ein, richte die drei serverseitigen Routen (Feedback, Umwandlung, Live-Mitschrift) und die SQL-Installation ein, konfiguriere `projectId`, `projectName` und `appVersion`, und prüfe Screenshot, Markieren, Mikrofon, Text und fehlgeschlagenes Senden. Halte alle Schlüssel auf dem Server.
 
 ## Client
 
@@ -121,7 +121,7 @@ npm run build
 npm pack --dry-run
 ```
 
-In der eingebauten App Desktop Chrome, Chrome auf Android und Safari auf iPhone prüfen: Screenshot mit Canvas, Markierung und Zwei-Finger-Zoom, Mikrofon erlaubt/verweigert, manueller Bildersatz, Transkriptionsfehler und Offline-Senden. Mikrofonzugriff erfordert HTTPS oder localhost.
+In der eingebauten App Desktop Chrome, Chrome auf Android und Safari auf iPhone prüfen: Screenshot mit Canvas, Markierung, Zwei-Finger-Zoom und Mausrad-Zoom, Mikrofon erlaubt/verweigert, manueller Bildersatz, Transkriptionsfehler und Offline-Senden. Mikrofonzugriff erfordert HTTPS oder localhost.
 
 ## Screenshot-Treue
 

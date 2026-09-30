@@ -45,6 +45,8 @@ describe("PointOutWidget", () => {
     expect(screen.getByRole("dialog", { name: "Feedback geben" })).toBeTruthy();
     expect(screen.getByText(/Screenshot wird aufgenommen/)).toBeTruthy();
     expect(document.body.style.overflow).not.toBe("hidden");
+    // The waiting frame already has the shape of the screen (jsdom: 1024 x 768), so nothing jumps later.
+    expect(screen.getByTestId("pointout-capture-frame").getAttribute("style")).toContain("aspect-ratio: 1024 / 768");
     await waitFor(() => expect(captureAppScreen).toHaveBeenCalledOnce());
     fireEvent.change(screen.getByRole("textbox", { name: "Feedback-Text" }), { target: { value: "Beim Warten geschrieben" } });
     expect(screen.getByRole<HTMLButtonElement>("button", { name: /Feedback senden/ }).disabled).toBe(true);

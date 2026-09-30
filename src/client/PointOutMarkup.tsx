@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ArrowUpRight, Circle, Eraser, Hand, Minus, Pencil, Plus, RectangleHorizontal, Undo2 } from "lucide-react";
 import { arrowHead, normalizePoint, type AnnotationMark, type AnnotationTool, type Point } from "../core/annotation";
 import { cn } from "./cn";
@@ -82,6 +83,28 @@ export function PointOutMarkup({ screenshot, marks, onChange }: {
     if (rect.width && rect.height) setBaseSize({ width: rect.width, height: rect.height });
   }, [baseSize, screenshot]);
 
+  const wheelRef = useRef<(event: WheelEvent) => void>(() => {});
+  wheelRef.current = (event) => {
+    const viewport = viewportRef.current;
+    if (!viewport || !baseSize) return;
+    // A trackpad pinch arrives as ctrl + wheel with tiny deltas; a mouse notch is 100 (3 lines in Firefox).
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 33 : 1);
+    const next = limitZoom(zoomRef.current * Math.exp(-pixels * (event.ctrlKey ? 0.01 : 0.0015)));
+    // Nothing left to zoom: leave the wheel to the page, so it still scrolls past the picture.
+    if (next === zoomRef.current) return;
+    event.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    setZoomAt(next, event.clientX - rect.left, event.clientY - rect.top);
+  };
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    // React registers wheel listeners as passive, which cannot stop the page from scrolling.
+    const onWheel = (event: WheelEvent) => wheelRef.current(event);
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, []);
+
   function measureImage() {
     const rect = imageRef.current?.getBoundingClientRect();
     if (rect?.width && rect.height) setBaseSize({ width: rect.width, height: rect.height });
@@ -104,11 +127,11 @@ export function PointOutMarkup({ screenshot, marks, onChange }: {
     const imageX = (viewport.scrollLeft + anchorX - horizontalOffset(previous)) / previous;
     const imageY = (viewport.scrollTop + anchorY) / previous;
     zoomRef.current = next;
-    setZoom(next);
-    window.requestAnimationFrame(() => {
-      viewport.scrollLeft = imageX * next + horizontalOffset(next) - anchorX;
-      viewport.scrollTop = imageY * next - anchorY;
-    });
+    // Drawn before the scroll position is set, so events that arrive back to back
+    // (a spinning wheel) each start from the picture the previous one produced.
+    flushSync(() => setZoom(next));
+    viewport.scrollLeft = imageX * next + horizontalOffset(next) - anchorX;
+    viewport.scrollTop = imageY * next - anchorY;
   }
 
   function zoomBy(step: number) {
@@ -161,7 +184,7 @@ export function PointOutMarkup({ screenshot, marks, onChange }: {
     event.preventDefault();
     activePointer.current = event.pointerId;
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    if (tool === "pan") {
+    if (tool === "pan" || (event.pointerType === "mouse" && event.button === 1)) {
       const viewport = viewportRef.current;
       panRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY,
         left: viewport?.scrollLeft ?? 0, top: viewport?.scrollTop ?? 0 };

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import html2canvas from "html2canvas-pro";
 import { domToPng, type Options as RendererOptions } from "modern-screenshot";
-import { captureAppScreen, isUniformImage, readManualScreenshot } from "../capture";
+import { captureAppScreen, clearPictureCache, isUniformImage, readManualScreenshot, shrinkToScreenCached } from "../capture";
 
 vi.mock("html2canvas-pro", () => ({ default: vi.fn() }));
 vi.mock("modern-screenshot", () => ({ domToPng: vi.fn() }));
@@ -29,6 +29,8 @@ describe("PointOut capture", () => {
     document.body.removeAttribute("style");
     vi.mocked(html2canvas).mockReset();
     renderer.mockReset();
+    clearPictureCache();
+    vi.unstubAllGlobals();
   });
 
   it("lets the browser draw the visible screen first, without PointOut's own controls", async () => {
@@ -154,6 +156,34 @@ describe("PointOut capture", () => {
     await captureAppScreen({ isBlank: async () => false, shrinkPicture });
     const [, options] = renderer.mock.calls[0] as [Node, RendererOptions];
     expect(options.fetchFn).toBe(shrinkPicture);
+  });
+
+  // WirdEcht 28.09.2026: Gartenfoto und Logo kosteten jede Aufnahme 0,6-1,3 s, obwohl sie sich nicht ändern.
+  it("prepares each picture only once per visit, so the next screenshot comes faster", () => {
+    const first = shrinkToScreenCached("https://app.test/garten.webp");
+    expect(shrinkToScreenCached("https://app.test/garten.webp")).toBe(first);
+    expect(shrinkToScreenCached("https://app.test/logo.webp")).not.toBe(first);
+  });
+
+  it("fetches a ::before picture that cannot be shrunk only once across screenshots", async () => {
+    const fetchPicture = vi.fn(async () => new Response("garten", { headers: { "Content-Type": "image/webp" } }));
+    vi.stubGlobal("fetch", fetchPicture);
+    const embedded: string[] = [];
+    renderer.mockImplementation(async (_node, options) => {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const style = document.createElement("style");
+      style.textContent = `.a1::before { background-image: url("https://app.test/garten.svg"); }`;
+      svg.append(style);
+      await (options as RendererOptions).onCreateForeignObjectSvg?.(svg);
+      embedded.push(style.textContent);
+      return BROWSER_SHOT;
+    });
+    const shrinkPicture = vi.fn(async () => false as const);
+    await captureAppScreen({ isBlank: async () => false, shrinkPicture });
+    await captureAppScreen({ isBlank: async () => false, shrinkPicture });
+    expect(embedded).toHaveLength(2);
+    embedded.forEach((css) => expect(css).toContain("data:image/webp"));
+    expect(fetchPicture).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the rebuilt screenshot when the browser renderer fails", async () => {

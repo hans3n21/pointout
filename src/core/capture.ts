@@ -112,6 +112,35 @@ async function shrinkToScreen(url: string): Promise<string | false> {
   }
 }
 
+/**
+ * Fetching, decoding and shrinking the page's pictures cost 0.6-1.3 s of every
+ * capture on a desktop (measured in WirdEcht, 28.09.2026), several times that on
+ * a tablet, for pictures that rarely change. Each one is prepared once per visit.
+ */
+const PICTURE_CACHE_LIMIT = 24;
+const pictureCache = new Map<string, Promise<string | false>>();
+
+function cachedPicture(url: string, prepare: () => Promise<string | false>): Promise<string | false> {
+  const known = pictureCache.get(url);
+  if (known) return known;
+  const pending = prepare();
+  pictureCache.set(url, pending);
+  // A failed picture is tried again next time instead of staying empty.
+  pending.catch(() => pictureCache.delete(url));
+  if (pictureCache.size > PICTURE_CACHE_LIMIT) pictureCache.delete(pictureCache.keys().next().value!);
+  return pending;
+}
+
+/** shrinkToScreen, remembered per picture. */
+export function shrinkToScreenCached(url: string): Promise<string | false> {
+  if (url.startsWith("data:")) return Promise.resolve(false);
+  return cachedPicture(url, () => shrinkToScreen(url));
+}
+
+export function clearPictureCache() {
+  pictureCache.clear();
+}
+
 const CSS_URL = /url\((['"]?)([^'"]+?)\1\)/g;
 
 /**
@@ -126,9 +155,10 @@ async function embedPseudoPictures(svg: SVGSVGElement, shrink: ShrinkPicture) {
     let embedded = css;
     for (const link of links) {
       try {
-        const data = await shrink(link) || await fetch(new URL(link, document.baseURI).href)
+        const data = await shrink(link) || await cachedPicture(`raw:${link}`, () => fetch(new URL(link, document.baseURI).href)
           .then((response) => { if (!response.ok) throw new Error(`Bild ${response.status}`); return response.blob(); })
-          .then(readAsDataUrl);
+          .then(readAsDataUrl));
+        if (!data) continue;
         embedded = embedded.replace(CSS_URL, (whole, quote: string, found: string) => found === link ? `url(${quote}${data}${quote})` : whole);
       } catch {
         // Unreadable picture: that area stays empty, the rest of the screenshot counts.
@@ -261,7 +291,7 @@ async function drawWithBrowser(backgroundColor: string, rasterizeSvg: RasterizeS
   }
 }
 
-export async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreen }: {
+export async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreenCached }: {
   isBlank?: (dataUrl: string) => Promise<boolean>;
   rasterizeSvg?: RasterizeSvg;
   shrinkPicture?: ShrinkPicture;

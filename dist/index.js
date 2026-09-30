@@ -437,6 +437,21 @@ async function shrinkToScreen(url) {
     return false;
   }
 }
+var PICTURE_CACHE_LIMIT = 24;
+var pictureCache = /* @__PURE__ */ new Map();
+function cachedPicture(url, prepare) {
+  const known = pictureCache.get(url);
+  if (known) return known;
+  const pending = prepare();
+  pictureCache.set(url, pending);
+  pending.catch(() => pictureCache.delete(url));
+  if (pictureCache.size > PICTURE_CACHE_LIMIT) pictureCache.delete(pictureCache.keys().next().value);
+  return pending;
+}
+function shrinkToScreenCached(url) {
+  if (url.startsWith("data:")) return Promise.resolve(false);
+  return cachedPicture(url, () => shrinkToScreen(url));
+}
 var CSS_URL = /url\((['"]?)([^'"]+?)\1\)/g;
 async function embedPseudoPictures(svg, shrink) {
   for (const sheet of Array.from(svg.querySelectorAll("style"))) {
@@ -445,10 +460,11 @@ async function embedPseudoPictures(svg, shrink) {
     let embedded = css;
     for (const link of links) {
       try {
-        const data = await shrink(link) || await fetch(new URL(link, document.baseURI).href).then((response) => {
+        const data = await shrink(link) || await cachedPicture(`raw:${link}`, () => fetch(new URL(link, document.baseURI).href).then((response) => {
           if (!response.ok) throw new Error(`Bild ${response.status}`);
           return response.blob();
-        }).then(readAsDataUrl);
+        }).then(readAsDataUrl));
+        if (!data) continue;
         embedded = embedded.replace(CSS_URL, (whole, quote, found) => found === link ? `url(${quote}${data}${quote})` : whole);
       } catch {
       }
@@ -574,7 +590,7 @@ async function drawWithBrowser(backgroundColor, rasterizeSvg, shrinkPicture) {
     pictures.clear();
   }
 }
-async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreen } = {}) {
+async function captureAppScreen({ isBlank = looksBlank, rasterizeSvg = paintSvg, shrinkPicture = shrinkToScreenCached } = {}) {
   const sourceCanvases = Array.from(document.querySelectorAll("canvas"));
   const bitmaps = sourceCanvases.map((source) => {
     const rect = source.getBoundingClientRect();
@@ -866,6 +882,7 @@ function toSentSteps(steps, openedAt) {
 
 // src/client/PointOutMarkup.tsx
 import { useEffect as useEffect3, useLayoutEffect, useRef as useRef2, useState as useState2 } from "react";
+import { flushSync } from "react-dom";
 import { ArrowUpRight, Circle, Eraser, Hand, Minus, Pencil, Plus, RectangleHorizontal, Undo2 } from "lucide-react";
 import { jsx, jsxs } from "react/jsx-runtime";
 var TOOLS = [
@@ -937,6 +954,25 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
     const rect = image.getBoundingClientRect();
     if (rect.width && rect.height) setBaseSize({ width: rect.width, height: rect.height });
   }, [baseSize, screenshot]);
+  const wheelRef = useRef2(() => {
+  });
+  wheelRef.current = (event) => {
+    const viewport = viewportRef.current;
+    if (!viewport || !baseSize) return;
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 33 : 1);
+    const next = limitZoom(zoomRef.current * Math.exp(-pixels * (event.ctrlKey ? 0.01 : 15e-4)));
+    if (next === zoomRef.current) return;
+    event.preventDefault();
+    const rect = viewport.getBoundingClientRect();
+    setZoomAt(next, event.clientX - rect.left, event.clientY - rect.top);
+  };
+  useEffect3(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const onWheel = (event) => wheelRef.current(event);
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, []);
   function measureImage() {
     const rect = imageRef.current?.getBoundingClientRect();
     if (rect?.width && rect.height) setBaseSize({ width: rect.width, height: rect.height });
@@ -956,11 +992,9 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
     const imageX = (viewport.scrollLeft + anchorX - horizontalOffset(previous)) / previous;
     const imageY = (viewport.scrollTop + anchorY) / previous;
     zoomRef.current = next;
-    setZoom(next);
-    window.requestAnimationFrame(() => {
-      viewport.scrollLeft = imageX * next + horizontalOffset(next) - anchorX;
-      viewport.scrollTop = imageY * next - anchorY;
-    });
+    flushSync(() => setZoom(next));
+    viewport.scrollLeft = imageX * next + horizontalOffset(next) - anchorX;
+    viewport.scrollTop = imageY * next - anchorY;
   }
   function zoomBy(step) {
     const viewport = viewportRef.current;
@@ -1013,7 +1047,7 @@ function PointOutMarkup({ screenshot, marks, onChange }) {
     event.preventDefault();
     activePointer.current = event.pointerId;
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    if (tool === "pan") {
+    if (tool === "pan" || event.pointerType === "mouse" && event.button === 1) {
       const viewport = viewportRef.current;
       panRef.current = {
         id: event.pointerId,
@@ -1245,6 +1279,7 @@ function PointOutWidget({
   const [captureSource, setCaptureSource] = useState3(null);
   const [marks, setMarks] = useState3([]);
   const [captureError, setCaptureError] = useState3("");
+  const [captureFrame, setCaptureFrame] = useState3(null);
   const [resumedDraft, setResumedDraft] = useState3(false);
   const [pasteMenu, setPasteMenu] = useState3(false);
   const [saving, setSaving] = useState3(false);
@@ -1307,6 +1342,7 @@ function PointOutWidget({
     setScreenshot(null);
     setCaptureSource(null);
     setMarks([]);
+    setCaptureFrame({ width: window.innerWidth, height: window.innerHeight });
     setOpen(true);
     await new Promise((resolve) => setTimeout(resolve, 60));
     if (run !== captureRun.current) return;
@@ -1492,10 +1528,19 @@ function PointOutWidget({
                   event.preventDefault();
                   setPasteMenu(true);
                 }, children: [
-                  screenshot ? /* @__PURE__ */ jsx2(PointOutMarkup, { screenshot, marks, onChange: setMarks }) : capturing ? /* @__PURE__ */ jsx2("div", { role: "status", className: "po:grid po:min-h-56 po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10", children: /* @__PURE__ */ jsxs2("span", { className: "po:inline-flex po:items-center po:gap-2", children: [
-                    /* @__PURE__ */ jsx2(Loader2, { className: "po:h-4 po:w-4 po:animate-spin" }),
-                    "Screenshot wird aufgenommen \u2026 du kannst schon schreiben oder einsprechen."
-                  ] }) }) : /* @__PURE__ */ jsx2("div", { className: "po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-white/15 po:bg-white/[0.03] po:p-5 po:text-center po:text-sm po:text-zinc-400", children: "Kein Screenshot vorhanden \u2013 w\xE4hle ein Bild aus oder beschreibe den Fehler direkt." }),
+                  screenshot ? /* @__PURE__ */ jsx2(PointOutMarkup, { screenshot, marks, onChange: setMarks }) : capturing ? /* @__PURE__ */ jsx2(
+                    "div",
+                    {
+                      role: "status",
+                      "data-testid": "pointout-capture-frame",
+                      className: cn("po:mx-auto po:grid po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10", !captureFrame && "po:min-h-56"),
+                      style: captureFrame ? { aspectRatio: `${captureFrame.width} / ${captureFrame.height}`, width: `min(100%, calc(36dvh * ${(captureFrame.width / captureFrame.height).toFixed(4)}))` } : void 0,
+                      children: /* @__PURE__ */ jsxs2("span", { className: "po:inline-flex po:items-center po:gap-2", children: [
+                        /* @__PURE__ */ jsx2(Loader2, { className: "po:h-4 po:w-4 po:animate-spin" }),
+                        "Screenshot wird aufgenommen \u2026 du kannst schon schreiben oder einsprechen."
+                      ] })
+                    }
+                  ) : /* @__PURE__ */ jsx2("div", { className: "po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-white/15 po:bg-white/[0.03] po:p-5 po:text-center po:text-sm po:text-zinc-400", children: "Kein Screenshot vorhanden \u2013 w\xE4hle ein Bild aus oder beschreibe den Fehler direkt." }),
                   pasteMenu ? /* @__PURE__ */ jsx2(
                     "button",
                     {

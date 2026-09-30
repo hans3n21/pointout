@@ -95,6 +95,8 @@ export function PointOutWidget({
   const [captureSource, setCaptureSource] = useState<"automatic" | "manual" | null>(null);
   const [marks, setMarks] = useState<AnnotationMark[]>([]);
   const [captureError, setCaptureError] = useState("");
+  /** Shape of the screen being captured: the waiting frame has it already, so the sheet does not jump. */
+  const [captureFrame, setCaptureFrame] = useState<{ width: number; height: number } | null>(null);
   const [resumedDraft, setResumedDraft] = useState(false);
   const [pasteMenu, setPasteMenu] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -150,6 +152,7 @@ export function PointOutWidget({
     setScreenshot(null);
     setCaptureSource(null);
     setMarks([]);
+    setCaptureFrame({ width: window.innerWidth, height: window.innerHeight });
     // The sheet is there at once and the picture follows; on a tablet the wait
     // for "nothing" took seconds. The capture leaves the sheet out and starts
     // only once it is drawn, otherwise it would block the opening.
@@ -330,7 +333,9 @@ export function PointOutWidget({
               <div className="po:relative" onContextMenu={(event) => { event.preventDefault(); setPasteMenu(true); }}>
                 {screenshot ? <PointOutMarkup screenshot={screenshot} marks={marks} onChange={setMarks} />
                   : capturing ? (
-                    <div role="status" className="po:grid po:min-h-56 po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10">
+                    <div role="status" data-testid="pointout-capture-frame"
+                      className={cn("po:mx-auto po:grid po:animate-pulse po:place-items-center po:rounded-2xl po:bg-white/[0.04] po:p-5 po:text-center po:text-sm po:text-zinc-300 po:ring-1 po:ring-white/10", !captureFrame && "po:min-h-56")}
+                      style={captureFrame ? { aspectRatio: `${captureFrame.width} / ${captureFrame.height}`, width: `min(100%, calc(36dvh * ${(captureFrame.width / captureFrame.height).toFixed(4)}))` } : undefined}>
                       <span className="po:inline-flex po:items-center po:gap-2"><Loader2 className="po:h-4 po:w-4 po:animate-spin" />Screenshot wird aufgenommen … du kannst schon schreiben oder einsprechen.</span>
                     </div>
                   ) : <div className="po:grid po:min-h-48 po:place-items-center po:rounded-2xl po:border po:border-dashed po:border-white/15 po:bg-white/[0.03] po:p-5 po:text-center po:text-sm po:text-zinc-400">Kein Screenshot vorhanden – wähle ein Bild aus oder beschreibe den Fehler direkt.</div>}
